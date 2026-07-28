@@ -154,6 +154,7 @@ struct ConfigPlan {
     action: PlannedAction,
     candidate: Option<String>,
     execution_mode: ExecutionMode,
+    provider: RepositoryProvider,
 }
 
 pub fn initialize(options: InitOptions) -> Result<InitReport> {
@@ -171,7 +172,11 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
         return Ok(InitReport {
             repository,
             resources: vec![
-                planned_resource(config.action, &config.path, "repository configuration"),
+                planned_resource(
+                    config.action,
+                    &config.path,
+                    repository_config_detail(config.provider),
+                ),
                 planned_resource(
                     config.workspace_action,
                     &config.workspace,
@@ -224,7 +229,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
     resources.push(ResourceResult {
         status: applied_status(config.action),
         resource: config.path.display().to_string(),
-        detail: Some("repository configuration".to_owned()),
+        detail: Some(repository_config_detail(config.provider).to_owned()),
     });
     resources.push(ResourceResult {
         status: applied_status(config.workspace_action),
@@ -311,11 +316,7 @@ pub fn discover_repository(requested: &Path) -> Result<PathBuf> {
         .context("failed to resolve Git repository root")?;
     let origin = git_output(&repository, &["config", "--get", "remote.origin.url"])
         .context("target repository has no origin remote")?;
-    let repository_ref =
-        RepositoryRef::parse(origin.trim()).context("origin is not a supported GitHub remote")?;
-    if repository_ref.provider != RepositoryProvider::GitHub {
-        bail!("origin is not a supported GitHub remote");
-    }
+    RepositoryRef::parse(origin.trim()).context("origin is not a supported repository remote")?;
     Ok(repository)
 }
 
@@ -512,6 +513,7 @@ fn plan_config(
                 action: PlannedAction::Unchanged,
                 candidate: None,
                 execution_mode: config.execution_mode,
+                provider: config.repository.provider,
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -537,10 +539,20 @@ fn plan_config(
                 action: PlannedAction::Create,
                 candidate: Some(candidate),
                 execution_mode: requested_mode,
+                provider: repository_ref.provider,
             })
         }
         Err(error) => {
             Err(error).with_context(|| format!("failed to inspect config {}", path.display()))
+        }
+    }
+}
+
+fn repository_config_detail(provider: RepositoryProvider) -> &'static str {
+    match provider {
+        RepositoryProvider::GitHub => "repository configuration",
+        RepositoryProvider::GitLab => {
+            "repository configuration; requires glab auth login --hostname gitlab.com"
         }
     }
 }

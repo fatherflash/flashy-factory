@@ -22,8 +22,10 @@ use crate::fleet::{
     RepositoryHealth, RepositoryRuntime, delay_to_next_poll, repository_backoff,
     resolve_rate_limit_delay,
 };
+use crate::forge::{Forge, forge_for_with_github};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
 use crate::hash::sha256_hex_prefix;
+use crate::repository::RepositoryProvider;
 use crate::runtime::{
     AgentRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     build_runtime, observation_channel,
@@ -311,6 +313,7 @@ pub struct FactoryDaemon {
     catalog: WorkflowCatalog,
     ledger_path: PathBuf,
     pinned_identity: Option<String>,
+    forge: Arc<dyn Forge>,
     github: GitHubClient,
     source: SourceClient,
     runtime: Arc<dyn AgentRuntime>,
@@ -565,9 +568,6 @@ impl FleetSupervisor {
     }
 
     pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
-        GitHubClient::default()
-            .validate_global(&cancellation)
-            .await?;
         let identities = self
             .repositories
             .iter()
@@ -1303,16 +1303,18 @@ impl FactoryDaemon {
         github: GitHubClient,
         runtime: Arc<dyn AgentRuntime>,
     ) -> Self {
+        let forge = forge_for_with_github(config.repository.provider, github.clone());
         let sandbox = config.worker.clone().map(|worker| {
             SandboxWorker::new(worker, sandbox_instance_id(&config.data_directory))
                 .with_activity_streaming(false)
         });
         Self {
             repository: config.repositories[0].clone(),
+            pinned_identity: Some(config.repository.identity.clone()),
+            forge,
             config,
             catalog,
             ledger_path: ledger_path.into(),
-            pinned_identity: None,
             github,
             source: SourceClient,
             runtime,
@@ -1342,7 +1344,7 @@ impl FactoryDaemon {
     }
 
     pub async fn run(&self, cancellation: CancellationToken) -> Result<()> {
-        eprintln!("Flashy Factory checking authenticated GitHub and Codex CLIs...");
+        eprintln!("Flashy Factory checking authenticated repository forge and agent CLIs...");
         if let Err(error) = self.validate(&cancellation).await {
             if cancellation.is_cancelled() {
                 return Ok(());
@@ -1361,7 +1363,7 @@ impl FactoryDaemon {
         &self,
         cancellation: &CancellationToken,
     ) -> Result<HashMap<String, RepositoryTarget>> {
-        self.validate_without_github_global(cancellation).await?;
+        self.validate(cancellation).await?;
         self.resolve_targets(cancellation).await
     }
 
@@ -1592,7 +1594,6 @@ impl FactoryDaemon {
     }
 
     pub async fn evaluate_once(&self, cancellation: CancellationToken) -> Result<OneShotReport> {
-        self.github.validate_global(&cancellation).await?;
         self.evaluate_once_after_global_validation(cancellation)
             .await
     }
@@ -1674,7 +1675,6 @@ impl FactoryDaemon {
     }
 
     async fn validate(&self, cancellation: &CancellationToken) -> Result<()> {
-        self.github.validate_global(cancellation).await?;
         self.validate_without_github_global(cancellation).await
     }
 
@@ -1688,6 +1688,11 @@ impl FactoryDaemon {
         }
         self.catalog.validate_ticket_workflows()?;
         if let Some(sandbox) = &self.sandbox {
+            if self.config.repository.provider == RepositoryProvider::GitLab {
+                bail!(
+                    "GitLab Docker Sandbox credentials require provider-aware worker credentials"
+                );
+            }
             self.github
                 .validate_token_env(sandbox.github_token_env(), cancellation)
                 .await?;
@@ -1715,23 +1720,22 @@ impl FactoryDaemon {
     ) -> Result<HashMap<String, RepositoryTarget>> {
         let mut targets = HashMap::new();
         for repository in &self.config.repositories {
-            let discovered_name = self
-                .github
-                .validate_repository(repository, cancellation)
+            self.forge
+                .validate(repository, &self.config.repository.identity, cancellation)
                 .await?;
-            let name = match self.pinned_identity.as_deref() {
-                Some(identity) if discovered_name.eq_ignore_ascii_case(identity) => {
-                    identity.to_owned()
-                }
-                Some(identity) => bail!(
-                    "GitHub repository identity {} does not match pinned repository identity {}",
-                    discovered_name,
-                    identity
-                ),
-                None => discovered_name,
-            };
+            let name = self
+                .pinned_identity
+                .as_deref()
+                .unwrap_or(&self.config.repository.identity)
+                .to_owned();
+            if self.forge.provider() == RepositoryProvider::GitLab {
+                bail!(
+                    "GitLab repository validation succeeded, but task execution requires provider-aware workspace operations"
+                );
+            }
             if let Some(source) = &self.config.source {
                 if source.command.is_empty() {
+                    self.github.validate_global(cancellation).await?;
                     let statuses = self
                         .catalog
                         .entries

@@ -745,6 +745,31 @@ fn init_accepts_supported_github_origins() {
 }
 
 #[test]
+fn init_discovers_and_pins_gitlab_subgroups() {
+    let fixture = Fixture::new();
+    set_origin(
+        &fixture.repository,
+        "git@gitlab.com:example/subgroup/repository.git",
+    );
+
+    fixture
+        .command()
+        .args(["init", "--check"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "requires glab auth login --hostname gitlab.com",
+        ));
+    assert!(!fixture.config_path().exists());
+    assert!(!fixture.data_home.exists());
+
+    fixture.command().arg("init").assert().success();
+    let config = fs::read_to_string(fixture.config_path()).unwrap();
+    assert!(config.contains("provider = \"gitlab\""));
+    assert!(config.contains("identity = \"gitlab.com/example/subgroup/repository\""));
+}
+
+#[test]
 fn init_rejects_github_lookalike_origin_without_leaking_credentials() {
     let fixture = Fixture::new();
     set_origin(
@@ -758,7 +783,7 @@ fn init_rejects_github_lookalike_origin_without_leaking_credentials() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "origin is not a supported GitHub remote",
+            "origin is not a supported repository remote",
         ))
         .stderr(predicate::str::contains("secret-token").not());
 }

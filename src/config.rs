@@ -469,12 +469,6 @@ fn resolve_repository_config(
             }
         }
     };
-    if resolved.provider != RepositoryProvider::GitHub {
-        bail!(
-            "repository provider {} is not supported by this build",
-            resolved.provider
-        );
-    }
     Ok(resolved)
 }
 

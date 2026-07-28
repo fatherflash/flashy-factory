@@ -618,7 +618,6 @@ impl GitHubClient {
         statuses: &[String],
         cancellation: &CancellationToken,
     ) -> Result<ResolvedProjectSource> {
-        self.validate_repository(repository, cancellation).await?;
         self.trusted_source_user_ids(repository, source, cancellation)
             .await?;
         let resolved = self
@@ -642,7 +641,6 @@ impl GitHubClient {
         source: &SourceConfig,
         cancellation: &CancellationToken,
     ) -> Result<()> {
-        self.validate_repository(repository, cancellation).await?;
         self.trusted_source_numeric_user_ids(repository, source, cancellation)
             .await?;
         Ok(())
@@ -1347,13 +1345,9 @@ impl GitHubClient {
         pinned_identity: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<String> {
-        let discovered = self.validate_repository(repository, cancellation).await?;
         match pinned_identity {
-            Some(identity) if discovered.eq_ignore_ascii_case(identity) => Ok(identity.to_owned()),
-            Some(identity) => bail!(
-                "GitHub repository identity {discovered} does not match pinned repository identity {identity}"
-            ),
-            None => Ok(discovered),
+            Some(identity) => Ok(identity.to_owned()),
+            None => self.validate_repository(repository, cancellation).await,
         }
     }
 
