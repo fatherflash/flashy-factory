@@ -2162,7 +2162,7 @@ impl Ledger {
                 |row| row.get(0),
             )
             .optional()
-            .context("failed to query recovery pull-request context")
+            .context("failed to query recovery change-request context")
     }
 
     pub fn tasks(&self) -> Result<Vec<Task>> {

@@ -18,6 +18,10 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
+use crate::repository::{
+    RepositoryProvider, recognize_change_request_url as recognize_repository_change_request_url,
+};
+
 const DEFAULT_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const READER_GRACE: Duration = Duration::from_secs(2);
@@ -64,6 +68,8 @@ pub struct RuntimeObservation {
     pub pull_request: Option<String>,
     pub activity: Option<String>,
     pub sequence: u64,
+    pub(crate) repository_provider: Option<RepositoryProvider>,
+    pub(crate) repository_identity: Option<String>,
 }
 
 pub type BeforeSpawn<'a> = Box<dyn FnOnce(&RuntimeObservation) -> Result<()> + Send + 'a>;
@@ -73,6 +79,20 @@ pub fn observation_channel() -> (
     watch::Receiver<RuntimeObservation>,
 ) {
     watch::channel(RuntimeObservation::default())
+}
+
+pub fn repository_observation_channel(
+    provider: RepositoryProvider,
+    identity: impl Into<String>,
+) -> (
+    watch::Sender<RuntimeObservation>,
+    watch::Receiver<RuntimeObservation>,
+) {
+    watch::channel(RuntimeObservation {
+        repository_provider: Some(provider),
+        repository_identity: Some(identity.into()),
+        ..RuntimeObservation::default()
+    })
 }
 
 /// A pluggable agent execution backend (Codex, Claude Code, ...). Callers
@@ -445,10 +465,13 @@ impl CodexRuntime {
             process_group.stop().await?;
             return Ok(preparation_result(termination, started));
         }
+        let target = observations.borrow().clone();
         let anchor_observation = RuntimeObservation {
             process_id: process_group.process_id,
             process_identity: process_group.process_identity.clone(),
             sequence: 1,
+            repository_provider: target.repository_provider,
+            repository_identity: target.repository_identity,
             ..RuntimeObservation::default()
         };
         if let Some(before_spawn) = before_spawn
@@ -780,7 +803,12 @@ fn capture_activity_line(
                     Some(format!("Codex progress: {summary}\n")),
                 );
             }
-            if let Some(pull_request) = find_pull_request_url(&event) {
+            let target = observations.borrow().clone();
+            if let Some(pull_request) = find_change_request_url(
+                &event,
+                target.repository_provider,
+                target.repository_identity.as_deref(),
+            ) {
                 observations.send_if_modified(|observation| {
                     if observation.pull_request.as_deref() == Some(&pull_request) {
                         return false;
@@ -869,7 +897,13 @@ fn activity_item_type(event: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
-pub(crate) fn find_pull_request_url(value: &Value) -> Option<String> {
+pub(crate) fn find_change_request_url(
+    value: &Value,
+    provider: Option<RepositoryProvider>,
+    identity: Option<&str>,
+) -> Option<String> {
+    let provider = provider?;
+    let identity = identity?;
     match value {
         Value::String(value) => value.split_whitespace().find_map(|word| {
             let candidate = word.trim_matches(|character: char| {
@@ -878,19 +912,14 @@ pub(crate) fn find_pull_request_url(value: &Value) -> Option<String> {
                     '(' | ')' | '[' | ']' | ',' | '.' | ';' | '\'' | '"'
                 )
             });
-            let mut parts = candidate.strip_prefix("https://github.com/")?.split('/');
-            let owner = parts.next()?;
-            let repository = parts.next()?;
-            let pull = parts.next()?;
-            let number = parts.next()?;
-            (!owner.is_empty()
-                && !repository.is_empty()
-                && pull == "pull"
-                && number.bytes().all(|byte| byte.is_ascii_digit()))
-            .then(|| candidate.to_owned())
+            recognize_repository_change_request_url(provider, identity, candidate)
         }),
-        Value::Array(values) => values.iter().find_map(find_pull_request_url),
-        Value::Object(values) => values.values().find_map(find_pull_request_url),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_change_request_url(value, Some(provider), Some(identity))),
+        Value::Object(values) => values
+            .values()
+            .find_map(|value| find_change_request_url(value, Some(provider), Some(identity))),
         _ => None,
     }
 }
@@ -1613,10 +1642,13 @@ impl AgentRuntime for GenericRuntime {
             process_group.stop().await?;
             return Ok(preparation_result(termination, started));
         }
+        let target = observations.borrow().clone();
         let anchor_observation = RuntimeObservation {
             process_id: process_group.process_id,
             process_identity: process_group.process_identity.clone(),
             sequence: 1,
+            repository_provider: target.repository_provider,
+            repository_identity: target.repository_identity,
             ..RuntimeObservation::default()
         };
         if let Some(before_spawn) = before_spawn

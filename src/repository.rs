@@ -51,6 +51,59 @@ impl RepositoryRef {
     }
 }
 
+pub fn recognize_change_request_url(
+    provider: RepositoryProvider,
+    identity: &str,
+    candidate: &str,
+) -> Option<String> {
+    let remainder = candidate.strip_prefix("https://")?;
+    let (host, path) = remainder.split_once('/')?;
+    let (expected_host, expected_project, marker) = match provider {
+        RepositoryProvider::GitHub => ("github.com", identity, "pull"),
+        RepositoryProvider::GitLab => (
+            "gitlab.com",
+            identity.strip_prefix("gitlab.com/")?,
+            "merge_requests",
+        ),
+    };
+    if !host.eq_ignore_ascii_case(expected_host) {
+        return None;
+    }
+    let segments = path.split('/').collect::<Vec<_>>();
+    let project_segments = expected_project.split('/').collect::<Vec<_>>();
+    let suffix = match provider {
+        RepositoryProvider::GitHub => 2,
+        RepositoryProvider::GitLab => 3,
+    };
+    if segments.len() != project_segments.len() + suffix
+        || !segments[..project_segments.len()]
+            .iter()
+            .zip(&project_segments)
+            .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+    {
+        return None;
+    }
+    let marker_offset = project_segments.len();
+    let number_offset = match provider {
+        RepositoryProvider::GitHub => marker_offset + 1,
+        RepositoryProvider::GitLab => {
+            if segments[marker_offset] != "-" {
+                return None;
+            }
+            marker_offset + 2
+        }
+    };
+    if segments[number_offset - 1] != marker
+        || segments[number_offset].is_empty()
+        || !segments[number_offset]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(candidate.to_owned())
+}
+
 pub fn parse_repository_ref(remote: &str) -> Result<RepositoryRef> {
     if remote.is_empty() || remote.contains(['?', '#']) {
         return malformed_remote();
@@ -168,7 +221,7 @@ fn unsupported_host<T>(host: &str) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepositoryProvider, RepositoryRef};
+    use super::{RepositoryProvider, RepositoryRef, recognize_change_request_url};
 
     #[test]
     fn parses_supported_github_remotes_without_changing_identity() {
@@ -230,5 +283,44 @@ mod tests {
         assert!(error.contains("example.github.com"));
         assert!(error.contains("github.com and gitlab.com"));
         assert!(!error.contains("secret"));
+    }
+
+    #[test]
+    fn recognizes_only_change_requests_for_the_configured_repository() {
+        assert_eq!(
+            recognize_change_request_url(
+                RepositoryProvider::GitHub,
+                "owner/repository",
+                "https://github.com/Owner/Repository/pull/42",
+            )
+            .as_deref(),
+            Some("https://github.com/Owner/Repository/pull/42")
+        );
+        assert_eq!(
+            recognize_change_request_url(
+                RepositoryProvider::GitLab,
+                "gitlab.com/group/subgroup/repository",
+                "https://GitLab.com/group/subgroup/repository/-/merge_requests/42",
+            )
+            .as_deref(),
+            Some("https://GitLab.com/group/subgroup/repository/-/merge_requests/42")
+        );
+        for candidate in [
+            "https://gitlab.com/group/repository/-/merge_requests/42",
+            "https://gitlab.com/group/subgroup/other/-/merge_requests/42",
+            "https://gitlab.example/group/subgroup/repository/-/merge_requests/42",
+            "https://gitlab.com/group/subgroup/repository/-/merge_requests/42?token=secret",
+            "https://github.com/group/subgroup/pull/42",
+        ] {
+            assert!(
+                recognize_change_request_url(
+                    RepositoryProvider::GitLab,
+                    "gitlab.com/group/subgroup/repository",
+                    candidate,
+                )
+                .is_none(),
+                "{candidate}"
+            );
+        }
     }
 }
