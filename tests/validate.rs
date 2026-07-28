@@ -4,7 +4,19 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command as ProcessCommand;
 
 use assert_cmd::Command;
+use factory::config::Config;
 use predicates::prelude::*;
+
+fn pin_repository(path: &std::path::Path, provider: &str, identity: &str) {
+    let contents = fs::read_to_string(path).unwrap();
+    let contents = contents.replace(
+        "poll_every = \"30s\"\n",
+        &format!(
+            "poll_every = \"30s\"\n\n[repository]\nprovider = {provider:?}\nidentity = {identity:?}\n"
+        ),
+    );
+    fs::write(path, contents).unwrap();
+}
 
 fn valid_config() -> (
     tempfile::TempDir,
@@ -118,6 +130,131 @@ fn validates_explicit_config() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("worker.runtime: codex"));
+}
+
+#[test]
+fn legacy_and_pinned_github_configs_use_the_same_durable_directory() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    let legacy = Config::load_with_data_home(&path, &data_home).unwrap();
+
+    pin_repository(&path, "github", "example/repository");
+    let pinned = Config::load_with_data_home(&path, &data_home).unwrap();
+
+    assert_eq!(legacy.repository, pinned.repository);
+    assert_eq!(legacy.data_directory, pinned.data_directory);
+}
+
+#[test]
+fn rejects_a_changed_repository_identity_before_selecting_durable_state() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    pin_repository(&path, "github", "example/expected");
+    let unused_data_home = data_home.with_file_name("unused-state");
+
+    let error = Config::load_with_data_home(&path, &unused_data_home).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains(
+            "configured repository github identity example/expected does not match origin github identity example/repository"
+        )
+    );
+    assert!(!unused_data_home.exists());
+}
+
+#[test]
+fn rejects_a_changed_repository_provider_before_selecting_durable_state() {
+    let (_temp, path, _repository, data_home) = valid_config();
+    pin_repository(&path, "gitlab", "gitlab.com/example/repository");
+    let unused_data_home = data_home.with_file_name("unused-provider-state");
+
+    let error = Config::load_with_data_home(&path, &unused_data_home).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains(
+            "configured repository gitlab identity gitlab.com/example/repository does not match origin github identity example/repository"
+        )
+    );
+    assert!(!unused_data_home.exists());
+}
+
+#[test]
+fn recognizes_a_pinned_gitlab_identity_without_enabling_unsupported_operations() {
+    let (_temp, path, repository, data_home) = valid_config();
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "git@gitlab.com:example/subgroup/repository.git",
+            ])
+            .current_dir(repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
+    let unused_data_home = data_home.with_file_name("unused-gitlab-state");
+
+    let error = Config::load_with_data_home(&path, &unused_data_home).unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("repository provider gitlab is not supported by this build")
+    );
+    assert!(!unused_data_home.exists());
+}
+
+#[test]
+fn rejects_a_linked_worktree_before_selecting_durable_state() {
+    let (temp, _path, repository, data_home) = valid_config();
+    assert!(
+        ProcessCommand::new("git")
+            .args(["add", "."])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "-c",
+                "user.name=Factory Test",
+                "-c",
+                "user.email=factory@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let linked = temp.path().join("linked");
+    assert!(
+        ProcessCommand::new("git")
+            .args(["worktree", "add", "--quiet", "-b", "linked"])
+            .arg(&linked)
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let unused_data_home = data_home.with_file_name("unused-linked-state");
+
+    let error = Config::load_with_data_home(
+        &linked.join(".flashy-factory/config.toml"),
+        &unused_data_home,
+    )
+    .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains(
+            "Flashy Factory must run from the primary checkout, not a linked Git worktree"
+        )
+    );
+    assert!(!unused_data_home.exists());
 }
 
 #[cfg(unix)]

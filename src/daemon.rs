@@ -4055,6 +4055,10 @@ mod tests {
         std::fs::write(&first_ledger, b"first-ledger-sentinel").unwrap();
         let config = Config {
             repositories: vec![second_repository.clone()],
+            repository: crate::config::RepositoryConfig {
+                provider: crate::repository::RepositoryProvider::GitHub,
+                identity: "acme/second".into(),
+            },
             poll_every: Duration::from_secs(60),
             default_runtime: "codex".into(),
             default_timeout: Duration::from_secs(60),

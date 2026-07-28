@@ -6,8 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::Duration;
 
-use factory::config::{Config, ExecutionMode, SourceConfig, TriggerConfig, TriggerKind};
+use factory::config::{
+    Config, ExecutionMode, RepositoryConfig, SourceConfig, TriggerConfig, TriggerKind,
+};
 use factory::github::GitHubClient;
+use factory::repository::RepositoryProvider;
 use factory::storage::{Ledger, RunOutcome};
 use factory::workflow::WorkflowCatalog;
 use tokio_util::sync::CancellationToken;
@@ -49,6 +52,10 @@ impl Fixture {
         let repository = repository.canonicalize().unwrap();
         let config = Config {
             repositories: vec![repository.clone()],
+            repository: RepositoryConfig {
+                provider: RepositoryProvider::GitHub,
+                identity: "example/repo".to_owned(),
+            },
             poll_every: Duration::from_secs(30),
             default_runtime: "codex".to_owned(),
             default_timeout: Duration::from_secs(120),

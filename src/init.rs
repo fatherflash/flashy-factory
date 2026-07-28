@@ -10,7 +10,7 @@ use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::config::{
     CONFIG_DIRECTORY, Config, ExecutionMode, LEGACY_CONFIG_DIRECTORY, repository_config_path,
-    repository_remote_identity,
+    repository_remote_ref,
 };
 use crate::repository::{RepositoryProvider, RepositoryRef};
 
@@ -515,14 +515,14 @@ fn plan_config(
             })
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            repository_remote_identity(repository)
+            let repository_ref = repository_remote_ref(repository)
                 .context("repository has no resolvable GitHub remote")?;
             let config_directory = path
                 .parent()
                 .and_then(Path::file_name)
                 .and_then(|name| name.to_str())
                 .context("repository configuration directory has no valid name")?;
-            let candidate = default_config(requested_mode, config_directory);
+            let candidate = default_config(requested_mode, config_directory, &repository_ref);
             let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
@@ -555,10 +555,17 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config(execution_mode: ExecutionMode, config_directory: &str) -> String {
+fn default_config(
+    execution_mode: ExecutionMode,
+    config_directory: &str,
+    repository: &RepositoryRef,
+) -> String {
     let mut document = DocumentMut::new();
     document["version"] = value(1);
     document["poll_every"] = value("30s");
+    document["repository"] = Item::Table(Table::new());
+    document["repository"]["provider"] = value(repository.provider.to_string());
+    document["repository"]["identity"] = value(repository.identity());
     document["worker"] = Item::Table(Table::new());
     document["worker"]["runtime"] = value("codex");
     document["worker"]["sandbox"] = value(execution_mode.to_string());

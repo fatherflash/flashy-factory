@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::Mutex;
@@ -168,6 +169,63 @@ fn command(data_home: &Path) -> Command {
     let mut command = Command::cargo_bin("factory").unwrap();
     command.env("FACTORY_DATA_HOME", data_home);
     command
+}
+
+#[test]
+fn fleet_inspection_rejects_a_changed_repository_config_before_opening_its_ledger() {
+    let _environment = ENVIRONMENT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let data_home = temp.path().join("data");
+    let repository = repository(temp.path(), &data_home, "first");
+    let fleet_path = temp.path().join("fleet.toml");
+    fs::write(
+        &fleet_path,
+        format!(
+            "max_concurrent = 1\n[[repository]]\nname = {:?}\npath = {:?}\n",
+            repository.identity, repository.path
+        ),
+    )
+    .unwrap();
+    let mut ledger = Ledger::open_in(&repository.data).unwrap();
+    ledger
+        .enqueue(
+            &TaskIdentity::ticket(&repository.identity, "implement", "42", "revision").unwrap(),
+        )
+        .unwrap();
+    drop(ledger);
+    let database = repository.data.join("factory.sqlite3");
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o000);
+    fs::set_permissions(&database, permissions).unwrap();
+    let config_path = repository.path.join(".flashy-factory/config.toml");
+    let changed_config = fs::read_to_string(&config_path).unwrap().replace(
+        "identity = \"acme/first\"",
+        "identity = \"acme/renamed-first\"",
+    );
+    fs::write(config_path, changed_config).unwrap();
+
+    command(&data_home)
+        .args(["tasks", "--fleet"])
+        .arg(&fleet_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "configured repository github identity acme/renamed-first does not match origin github identity acme/first",
+        ));
+
+    let mut permissions = fs::metadata(&database).unwrap().permissions();
+    permissions.set_mode(0o600);
+    fs::set_permissions(database, permissions).unwrap();
+    assert_eq!(
+        Ledger::open_in(&repository.data)
+            .unwrap()
+            .tasks()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
