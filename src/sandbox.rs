@@ -14,8 +14,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::WorkerConfig;
 use crate::runtime::{
-    ExecutionResult, RuntimeObservation, Termination, find_pull_request_url, safe_activity_summary,
-    write_stderr_best_effort, write_stdout_best_effort,
+    ExecutionResult, RuntimeObservation, Termination, find_change_request_url,
+    safe_activity_summary, write_stderr_best_effort, write_stdout_best_effort,
 };
 
 const MAX_STREAM_BYTES: usize = 256 * 1024;
@@ -707,7 +707,12 @@ fn record_activity_line(
 
 fn observe_event(observations: &watch::Sender<RuntimeObservation>, event: &Value) {
     let summary = safe_activity_summary(event);
-    let pull_request = find_pull_request_url(event);
+    let target = observations.borrow().clone();
+    let pull_request = find_change_request_url(
+        event,
+        target.repository_provider,
+        target.repository_identity.as_deref(),
+    );
     if summary.is_none() && pull_request.is_none() {
         return;
     }
@@ -1321,6 +1326,28 @@ printf '%s\n' factory-test-instance-11 factory-other-instance-12 codex-project
         assert_eq!(receiver.borrow().sequence, 0);
         assert_eq!(receiver.borrow().activity, None);
         assert_eq!(receiver.borrow().pull_request, None);
+    }
+
+    #[test]
+    fn sandbox_records_only_the_configured_gitlab_merge_request() {
+        let (observations, receiver) = crate::runtime::repository_observation_channel(
+            crate::repository::RepositoryProvider::GitLab,
+            "gitlab.com/group/subgroup/repository",
+        );
+
+        observe_event(
+            &observations,
+            &serde_json::json!({
+                "type": "item.completed",
+                "wrong": "https://gitlab.com/group/other/-/merge_requests/7",
+                "right": "https://gitlab.com/group/subgroup/repository/-/merge_requests/42"
+            }),
+        );
+
+        assert_eq!(
+            receiver.borrow().pull_request.as_deref(),
+            Some("https://gitlab.com/group/subgroup/repository/-/merge_requests/42")
+        );
     }
 
     #[test]

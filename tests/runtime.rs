@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use factory::repository::RepositoryProvider;
 use factory::runtime::{
     AgentRuntime, CodexRuntime, GenericPreset, GenericRuntime, RuntimeCancelled, Termination,
-    observation_channel,
+    observation_channel, repository_observation_channel,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -250,7 +251,8 @@ echo '","item":{"type":"command_execution","command":"print TOKEN"},"url":"https
 printf 'done' > "$output"
 exit 0"#,
     );
-    let (observations, receiver) = observation_channel();
+    let (observations, receiver) =
+        repository_observation_channel(RepositoryProvider::GitHub, "owainlewis/factory");
 
     let result = CodexRuntime::new(executable)
         .with_activity_streaming(false)
@@ -275,6 +277,43 @@ exit 0"#,
     assert_eq!(activity, "Codex progress: command finished\n");
     assert!(!activity.contains("TOKEN"));
     assert!(!activity.contains("ssssssss"));
+}
+
+#[tokio::test]
+async fn records_only_a_matching_gitlab_merge_request_from_worker_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let executable = fake_codex(
+        temp.path(),
+        r#"cat >/dev/null
+echo '{"type":"item.completed","url":"https://gitlab.com/group/other/-/merge_requests/7"}'
+echo '{"type":"item.completed","url":"https://github.com/group/subgroup/pull/7"}'
+echo '{"type":"item.completed","url":"https://gitlab.com/group/subgroup/repository/-/merge_requests/42"}'
+printf 'done' > "$output"
+exit 0"#,
+    );
+    let (observations, receiver) = repository_observation_channel(
+        RepositoryProvider::GitLab,
+        "gitlab.com/group/subgroup/repository",
+    );
+
+    let result = CodexRuntime::new(executable)
+        .with_activity_streaming(false)
+        .run_with_session(
+            "Observe safely.",
+            temp.path(),
+            Duration::from_secs(5),
+            CancellationToken::new(),
+            None,
+            observations,
+        )
+        .await
+        .unwrap();
+
+    assert!(result.succeeded());
+    assert_eq!(
+        receiver.borrow().pull_request.as_deref(),
+        Some("https://gitlab.com/group/subgroup/repository/-/merge_requests/42")
+    );
 }
 
 #[tokio::test]

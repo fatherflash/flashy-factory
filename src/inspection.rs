@@ -378,7 +378,7 @@ pub fn print_inspection(inspection: &RunInspection) {
         safe_text(inspection.run.factory_branch.as_deref().unwrap_or("-"))
     );
     println!(
-        "Pull request: {}",
+        "Change request: {}",
         safe_text(inspection.run.pull_request.as_deref().unwrap_or("-"))
     );
     println!(
