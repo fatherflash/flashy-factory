@@ -12,6 +12,7 @@ use crate::config::{
     CONFIG_DIRECTORY, Config, ExecutionMode, LEGACY_CONFIG_DIRECTORY, repository_config_path,
     repository_remote_identity,
 };
+use crate::repository::{RepositoryProvider, RepositoryRef};
 
 const TRIAGE_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/triage.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/implement.md");
@@ -310,70 +311,12 @@ pub fn discover_repository(requested: &Path) -> Result<PathBuf> {
         .context("failed to resolve Git repository root")?;
     let origin = git_output(&repository, &["config", "--get", "remote.origin.url"])
         .context("target repository has no origin remote")?;
-    if !is_github_origin(origin.trim()) {
+    let repository_ref =
+        RepositoryRef::parse(origin.trim()).context("origin is not a supported GitHub remote")?;
+    if repository_ref.provider != RepositoryProvider::GitHub {
         bail!("origin is not a supported GitHub remote");
     }
     Ok(repository)
-}
-
-fn is_github_origin(origin: &str) -> bool {
-    origin.starts_with("git@github.com:")
-        || https_origin_has_github_host(origin)
-        || ssh_origin_has_github_host(origin)
-}
-
-fn https_origin_has_github_host(origin: &str) -> bool {
-    let Some(remainder) = origin.strip_prefix("https://") else {
-        return false;
-    };
-    let Some((authority, path)) = remainder.split_once('/') else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    let host_and_port = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = match host_and_port.rsplit_once(':') {
-        Some((host, port))
-            if !port.is_empty() && port.chars().all(|item| item.is_ascii_digit()) =>
-        {
-            host
-        }
-        Some(_) => return false,
-        None => host_and_port,
-    };
-    host.eq_ignore_ascii_case("github.com")
-}
-
-fn ssh_origin_has_github_host(origin: &str) -> bool {
-    let Some(remainder) = origin.strip_prefix("ssh://") else {
-        return false;
-    };
-    let Some((authority, path)) = remainder.split_once('/') else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    let Some((user, host_and_port)) = authority.rsplit_once('@') else {
-        return false;
-    };
-    if user != "git" {
-        return false;
-    }
-    match host_and_port.rsplit_once(':') {
-        Some((host, "443")) => {
-            host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com")
-        }
-        Some((host, port)) => {
-            host.eq_ignore_ascii_case("github.com")
-                && !port.is_empty()
-                && port.chars().all(|item| item.is_ascii_digit())
-        }
-        None => host_and_port.eq_ignore_ascii_case("github.com"),
-    }
 }
 
 fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
