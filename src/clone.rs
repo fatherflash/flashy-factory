@@ -66,7 +66,7 @@ impl CloneManager {
         }
         if !path.exists() {
             let staging = tempfile::Builder::new()
-                .prefix(".factory-clone-")
+                .prefix(".flashy-factory-clone-")
                 .tempdir_in(&self.root)
                 .context("failed to create clone staging directory")?;
             let staged_clone = staging.path().join("repository");

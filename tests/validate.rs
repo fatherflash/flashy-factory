@@ -15,7 +15,7 @@ fn valid_config() -> (
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
     let data_home = temp.path().join("data");
-    fs::create_dir_all(repository.join(".factory")).unwrap();
+    fs::create_dir_all(repository.join(".flashy-factory")).unwrap();
     assert!(
         ProcessCommand::new("git")
             .args(["init", "--quiet"])
@@ -44,7 +44,7 @@ fn valid_config() -> (
         .arg("init")
         .assert()
         .success();
-    let path = repository.join(".factory/config.toml");
+    let path = repository.join(".flashy-factory/config.toml");
     fs::write(
         &path,
         r#"version = 1
@@ -67,7 +67,7 @@ trusted_users = ["example"]
 [trigger.implement]
 type = "label"
 label = "agent:ready"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 "#,
     )
     .unwrap();
@@ -244,25 +244,29 @@ fn validates_a_configurable_source_label_trigger() {
                 "labels = [\"factory:custom-stage\"]",
             )
             .replace(
-                "command = [\".factory/sources/github\"]",
-                "command = [\".factory/source.sh\"]",
+                "command = [\".flashy-factory/sources/github\"]",
+                "command = [\".flashy-factory/source.sh\"]",
             ),
     )
     .unwrap();
-    let source = repository.join(".factory/source.sh");
+    let source = repository.join(".flashy-factory/source.sh");
     fs::write(&source, "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[]}'\n").unwrap();
     let mut permissions = fs::metadata(&source).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&source, permissions).unwrap();
-    fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
-    fs::write(repository.join(".factory/workflows/triage.md"), "Triage.\n").unwrap();
+    fs::create_dir_all(repository.join(".flashy-factory/workflows")).unwrap();
     fs::write(
-        repository.join(".factory/workflows/implement.md"),
+        repository.join(".flashy-factory/workflows/triage.md"),
+        "Triage.\n",
+    )
+    .unwrap();
+    fs::write(
+        repository.join(".flashy-factory/workflows/implement.md"),
         "Implement.\n",
     )
     .unwrap();
     fs::write(
-        repository.join(".factory/workflows/bug-finder.md"),
+        repository.join(".flashy-factory/workflows/bug-finder.md"),
         "Find bugs.\n",
     )
     .unwrap();
@@ -318,7 +322,10 @@ fn rejects_an_empty_source_command() {
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
-        contents.replace(r#"command = [".factory/sources/github"]"#, "command = []"),
+        contents.replace(
+            r#"command = [".flashy-factory/sources/github"]"#,
+            "command = []",
+        ),
     )
     .unwrap();
 

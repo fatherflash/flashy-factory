@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-asana_client="${FLASHY_FACTORY_ASANA_CLIENT:-$script_dir/../.factory/clients/asana}"
+asana_client="${FLASHY_FACTORY_ASANA_CLIENT:-$script_dir/../.flashy-factory/clients/asana}"
 ready_section="Ready For Spec"
 
 usage() {

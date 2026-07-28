@@ -25,7 +25,7 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
-        fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+        fs::create_dir_all(repository.join(".flashy-factory/workflows")).unwrap();
         assert!(
             Command::new("git")
                 .args(["init", "--quiet"])
@@ -42,7 +42,7 @@ impl Fixture {
                 .unwrap()
                 .success()
         );
-        let workflow = repository.join(".factory/workflows/implement.md");
+        let workflow = repository.join(".flashy-factory/workflows/implement.md");
         fs::write(&workflow, "Fetch issue $FACTORY_ISSUE and implement it.\n").unwrap();
         fs::write(repository.join(".label-present"), "yes").unwrap();
         fs::write(repository.join(".event-id"), "101").unwrap();

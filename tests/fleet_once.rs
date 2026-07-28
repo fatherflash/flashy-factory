@@ -37,7 +37,7 @@ fn make_repository(root: &Path, data_home: &Path, name: &str, origin: &str) -> P
         .assert()
         .success();
     fs::write(
-        repository.join(".factory/config.toml"),
+        repository.join(".flashy-factory/config.toml"),
         r#"version = 1
 poll_every = "60s"
 
@@ -49,22 +49,22 @@ maximum_timeout = "8h"
 max_concurrent = 2
 
 [source]
-command = ["./.factory/source.sh"]
+command = ["./.flashy-factory/source.sh"]
 
 [trigger.implement]
 type = "source"
 state = "ready"
 labels = ["factory:ready"]
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 "#,
     )
     .unwrap();
     fs::write(
-        repository.join(".factory/workflows/implement.md"),
+        repository.join(".flashy-factory/workflows/implement.md"),
         "Implement the issue.\n",
     )
     .unwrap();
-    let source = repository.join(".factory/source.sh");
+    let source = repository.join(".flashy-factory/source.sh");
     fs::write(
         &source,
         "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[{\"key\":\"#42\",\"title\":\"Fleet task\",\"state\":\"ready\",\"labels\":[\"factory:ready\"]}]}'\n",
@@ -176,7 +176,8 @@ fn snapshot_persistence_failure_does_not_skip_later_repositories() {
         "git@github.com:acme/second.git",
     );
     let first_config =
-        Config::load_with_data_home(&first.join(".factory/config.toml"), &data_home).unwrap();
+        Config::load_with_data_home(&first.join(".flashy-factory/config.toml"), &data_home)
+            .unwrap();
     let first_ledger = Ledger::open_in(&first_config.data_directory).unwrap();
     rusqlite::Connection::open(first_ledger.path())
         .unwrap()
@@ -213,7 +214,8 @@ fn snapshot_persistence_failure_does_not_skip_later_repositories() {
         ));
 
     let second_config =
-        Config::load_with_data_home(&second.join(".factory/config.toml"), &data_home).unwrap();
+        Config::load_with_data_home(&second.join(".flashy-factory/config.toml"), &data_home)
+            .unwrap();
     assert_eq!(
         Ledger::open_in(&second_config.data_directory)
             .unwrap()
@@ -385,7 +387,8 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
         "git@github.com:acme/disabled.git",
     );
     let disabled_config =
-        Config::load_with_data_home(&disabled.join(".factory/config.toml"), &data_home).unwrap();
+        Config::load_with_data_home(&disabled.join(".flashy-factory/config.toml"), &data_home)
+            .unwrap();
     let mut disabled_ledger = Ledger::open_in(&disabled_config.data_directory).unwrap();
     let task = disabled_ledger
         .enqueue(&TaskIdentity::ticket("acme/disabled", "implement", "#42", "revision").unwrap())
@@ -451,7 +454,7 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
 
     let launch_marker = disabled.join("disabled-source-ran");
     fs::write(
-        disabled.join(".factory/source.sh"),
+        disabled.join(".flashy-factory/source.sh"),
         format!(
             "#!/bin/sh\ntouch {:?}\nprintf '%s\\n' '{{\"issues\":[]}}'\n",
             launch_marker
@@ -459,7 +462,7 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
     )
     .unwrap();
     fs::write(
-        disabled.join(".factory/config.toml"),
+        disabled.join(".flashy-factory/config.toml"),
         "this is no longer valid Flashy Factory configuration\n",
     )
     .unwrap();

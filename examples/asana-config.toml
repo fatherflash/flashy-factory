@@ -9,15 +9,15 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [".factory/sources/asana", "--max-results", "200"]
+command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"

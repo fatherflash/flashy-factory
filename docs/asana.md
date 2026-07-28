@@ -6,9 +6,9 @@ labels, and each task GID is the durable source identity.
 
 The integration has two repository-owned layers:
 
-- `.factory/clients/asana` is the authenticated API boundary used by agents to
+- `.flashy-factory/clients/asana` is the authenticated API boundary used by agents to
   read, create, update, comment on, move, and tag tasks.
-- `.factory/sources/asana` is the polling adapter. It delegates to the client
+- `.flashy-factory/sources/asana` is the polling adapter. It delegates to the client
   and emits Flashy Factory's provider-neutral source JSON.
 
 The Rust scheduler remains provider-neutral. It still owns polling, durable
@@ -25,7 +25,7 @@ Ready For Spec → Creating Spec → Awaiting Approval
 Ready To Implement → Implementing → Reviewing → Done
 ```
 
-You can choose different names, but update `.factory/config.toml` and the
+You can choose different names, but update `.flashy-factory/config.toml` and the
 workflow prompts together. Only trusted project members should be able to move
 tasks into `Ready For Spec` or `Ready To Implement`; those moves authorize an
 agent run.
@@ -52,9 +52,9 @@ The client sends the token only in the `Authorization` header. It accepts only
 Asana's official HTTPS API endpoint, refuses HTTP redirects, redacts the token
 from diagnostics, and never stores it in configuration, task payloads, logs, or
 command-line arguments. Do not put the token in `.env`,
-`.factory/config.toml`, workflow files, task descriptions, or shell history.
-Prefer an OS secret manager or service manager environment configuration for
-long-running use.
+`.flashy-factory/config.toml`, legacy `.factory/config.toml`, workflow files,
+task descriptions, or shell history. Prefer an OS secret manager or service
+manager environment configuration for long-running use.
 
 The token inherits the permissions of its Asana user. Use a dedicated user with
 access only to the intended workspace and project when practical. The current
@@ -67,17 +67,17 @@ The repository is preconfigured with:
 
 ```toml
 [source]
-command = [".factory/sources/asana", "--max-results", "200"]
+command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 ```
 
@@ -100,21 +100,21 @@ input so content is not mangled by shell quoting:
 
 ```sh
 # Discover and read
-.factory/clients/asana list --state "Ready To Implement"
-.factory/clients/asana get TASK_GID
+.flashy-factory/clients/asana list --state "Ready To Implement"
+.flashy-factory/clients/asana get TASK_GID
 
 # Create and refine
-.factory/clients/asana create \
+.flashy-factory/clients/asana create \
   --name "Fix retry accounting" \
   --section "Ready For Spec" \
   --notes-file /tmp/task.md
-.factory/clients/asana update TASK_GID --notes-file /tmp/task.md
-.factory/clients/asana comment TASK_GID --text-file /tmp/comment.md
+.flashy-factory/clients/asana update TASK_GID --notes-file /tmp/task.md
+.flashy-factory/clients/asana comment TASK_GID --text-file /tmp/comment.md
 
 # Move and classify
-.factory/clients/asana move TASK_GID --section "Reviewing"
-.factory/clients/asana add-tag TASK_GID --tag "bug"
-.factory/clients/asana remove-tag TASK_GID --tag "enhancement"
+.flashy-factory/clients/asana move TASK_GID --section "Reviewing"
+.flashy-factory/clients/asana add-tag TASK_GID --tag "bug"
+.flashy-factory/clients/asana remove-tag TASK_GID --tag "enhancement"
 ```
 
 `get` returns the task plus up to 200 human comment stories. Every get, update,
@@ -139,7 +139,9 @@ factory run
 `factory run --once` is the safest first live check: it discovers and records
 eligible tasks but does not launch a worker.
 
-The lowercase `factory` binary, Rust crate, `.factory` directory, `FACTORY_*`
-environment variables, database filename, and existing branch/state formats
-are deliberately retained for compatibility with the upstream project and
-existing installations. “Flashy Factory” is the user-facing product name.
+The lowercase `factory` binary and Rust crate, database filename, and existing
+branch/state formats are deliberately retained for compatibility with the
+upstream project and existing installations. New repository files live in
+`.flashy-factory`; the previous `.factory` layout and `FACTORY_DATA_HOME`
+environment variable remain supported compatibility aliases. “Flashy Factory”
+is the user-facing product name.

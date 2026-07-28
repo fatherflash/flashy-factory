@@ -1,5 +1,5 @@
-# Copy the Jira workflow examples into .factory/workflows, copy the source and
-# trigger tables into .factory/config.toml, then adapt the project key, Jira
+# Copy the Jira workflow examples into .flashy-factory/workflows, copy the source and
+# trigger tables into .flashy-factory/config.toml, then adapt the project key, Jira
 # state names, and label.
 version = 1
 poll_every = "30s"
@@ -13,7 +13,7 @@ max_concurrent = 1
 
 [source]
 command = [
-  ".factory/sources/jira",
+  ".flashy-factory/sources/jira",
   "--project", "SPS",
   "--max-results", "100",
 ]
@@ -22,11 +22,11 @@ command = [
 type = "source"
 state = "Ready For Spec"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira-triage.md"
+workflow = ".flashy-factory/workflows/jira-triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira-implement.md"
+workflow = ".flashy-factory/workflows/jira-implement.md"
 timeout = "4h"

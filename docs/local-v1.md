@@ -30,12 +30,12 @@ factory init
 Initialization creates missing files without overwriting existing ones:
 
 ```text
-.factory/config.toml
-.factory/clients/asana
-.factory/sources/asana
-.factory/workflows/triage.md
-.factory/workflows/implement.md
-.factory/workflows/bug-finder.md
+.flashy-factory/config.toml
+.flashy-factory/clients/asana
+.flashy-factory/sources/asana
+.flashy-factory/workflows/triage.md
+.flashy-factory/workflows/implement.md
+.flashy-factory/workflows/bug-finder.md
 ```
 
 Use `factory init --check` to preview the changes. The default sandbox is a Git
@@ -44,7 +44,7 @@ Sandbox settings instead.
 
 ## Configure the control plane
 
-Edit `.factory/config.toml`:
+Edit `.flashy-factory/config.toml`:
 
 ```toml
 version = 1
@@ -58,28 +58,28 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [".factory/sources/asana", "--max-results", "200"]
+command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 
 [trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-workflow = ".factory/workflows/bug-finder.md"
+workflow = ".flashy-factory/workflows/bug-finder.md"
 ```
 
 The state and optional label names are passed to the repository's source
-adapter. They are not hard-coded pipeline roles. `.factory/sources/asana`
+adapter. They are not hard-coded pipeline roles. `.flashy-factory/sources/asana`
 matches an exact Asana section and optional exact tag names in
 `ASANA_PROJECT_GID`. Configure authentication and the project structure by
 following the [Asana guide](asana.md). You can add another source trigger:
@@ -89,7 +89,7 @@ following the [Asana guide](asana.md). You can add another source trigger:
 type = "source"
 state = "Urgent"
 labels = ["security"]
-workflow = ".factory/workflows/urgent-fix.md"
+workflow = ".flashy-factory/workflows/urgent-fix.md"
 ```
 
 The generated bug finder runs weekly and can also be started immediately with
@@ -103,7 +103,7 @@ You can add another scheduled job:
 type = "schedule"
 schedule = "0 8 * * *"
 timezone = "Europe/London"
-workflow = ".factory/workflows/security-review.md"
+workflow = ".flashy-factory/workflows/security-review.md"
 timeout = "1h"
 ```
 
@@ -163,7 +163,7 @@ Durable task keys and atomic claims prevent duplicate workers after restarts.
 
 ## Run two repositories as a fleet
 
-Keep each repository's existing `.factory/config.toml`, workflows, source, data
+Keep each repository's existing `.flashy-factory/config.toml`, workflows, source, data
 directory, and workspaces. Create a separate fleet file, for example
 `~/.config/factory/fleet.toml`:
 

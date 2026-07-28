@@ -107,7 +107,7 @@ authorization boundary.
 Each managed repository owns:
 
 ```text
-.factory/
+.flashy-factory/
 ├── clients/
 │   └── asana
 ├── config.toml
@@ -133,24 +133,24 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [".factory/sources/asana", "--max-results", "200"]
+command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 
 [trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-workflow = ".factory/workflows/bug-finder.md"
+workflow = ".flashy-factory/workflows/bug-finder.md"
 ```
 
 Trigger types are tagged so validation can reject mixed, unknown, or misspelled

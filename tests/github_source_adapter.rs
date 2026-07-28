@@ -71,7 +71,8 @@ exit 64
 
 #[test]
 fn repository_factory_config_polls_asana_sections() {
-    let config_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/config.toml");
+    let config_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/config.toml");
     let config = fs::read_to_string(config_path)
         .unwrap()
         .parse::<DocumentMut>()
@@ -81,7 +82,7 @@ fn repository_factory_config_polls_asana_sections() {
     assert_eq!(source.len(), 3);
     assert_eq!(
         source.get(0).and_then(|item| item.as_str()),
-        Some(".factory/sources/asana")
+        Some(".flashy-factory/sources/asana")
     );
     assert_eq!(
         source.get(1).and_then(|item| item.as_str()),
@@ -111,11 +112,12 @@ fn repository_workflows_claim_asana_tasks_before_engineering_work() {
         ("triage.md", "`Ready For Spec`", "`Creating Spec`"),
         ("implement.md", "`Ready To Implement`", "`Implementing`"),
     ] {
-        let prompt = fs::read_to_string(root.join(".factory/workflows").join(workflow)).unwrap();
+        let prompt =
+            fs::read_to_string(root.join(".flashy-factory/workflows").join(workflow)).unwrap();
         let ready = prompt.find(ready_value).unwrap();
         let claim = prompt.find(claim_value).unwrap();
         assert!(ready < claim);
-        assert!(prompt.contains(".factory/clients/asana move"));
+        assert!(prompt.contains(".flashy-factory/clients/asana move"));
         assert!(prompt.contains("Only continue after"));
     }
 }
@@ -132,7 +134,8 @@ fn github_adapter_lists_issues_by_state_and_label_with_no_project_or_author_filt
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/github");
     let output = Command::new(adapter)
         .args(["--state", "open", "--label", "factory:ready-to-implement"])
         .env("PATH", path)
@@ -172,7 +175,8 @@ fn github_adapter_lists_issues_by_state_and_label_with_no_project_or_author_filt
 
 #[test]
 fn github_adapter_requires_state() {
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/github");
     let output = Command::new(adapter)
         .args(["--label", "factory:ready-to-implement"])
         .output()
@@ -192,7 +196,8 @@ fn github_adapter_fails_instead_of_silently_truncating_work() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/github");
     let output = Command::new(adapter)
         .args(["--state", "open"])
         .env("PATH", path)
@@ -218,7 +223,8 @@ fn github_adapter_accepts_exactly_the_maximum_result_count() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/github");
     let output = Command::new(adapter)
         .args(["--state", "open"])
         .env("PATH", path)
@@ -283,7 +289,7 @@ exit 64
             std::env::var("PATH").unwrap_or_default()
         );
         let adapter =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/github");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/github");
         let output = Command::new(adapter)
             .args(["--state", "open"])
             .env("PATH", path)

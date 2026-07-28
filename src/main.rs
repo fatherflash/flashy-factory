@@ -8,7 +8,10 @@ use serde::Serialize;
 use tokio_util::sync::CancellationToken;
 
 use factory::clone::CloneManager;
-use factory::config::{Config, ExecutionMode, repository_config_path};
+use factory::config::{
+    CONFIG_DIRECTORY, Config, ExecutionMode, LEGACY_CONFIG_DIRECTORY, configured_data_home,
+    repository_config_path, resolve_repository_config_path,
+};
 use factory::daemon::{FactoryDaemon, FleetSupervisor};
 use factory::execution::ResolvedWorkflow;
 use factory::fleet::{
@@ -683,11 +686,9 @@ async fn run_cli() -> Result<u8> {
             let config = Config::load_for_inspection(&path)?;
             let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
             let mut databases = vec![("repository", data_directory.join(DATABASE_NAME))];
-            let global = dirs::home_dir()
-                .context("could not determine Flashy Factory data directory")?
-                .join(".factory")
-                .join(DATABASE_NAME);
-            push_reset_target(&mut databases, "legacy-global", global);
+            for (kind, global) in default_unscoped_database_paths()? {
+                push_reset_target(&mut databases, kind, global);
+            }
             if let Some(configured_global) = configured_unscoped_database_path()? {
                 push_reset_target(&mut databases, "configured-global", configured_global);
             }
@@ -1336,7 +1337,7 @@ fn resolve_config_path(config_path: Option<PathBuf>) -> Result<PathBuf> {
     }
     let current = std::env::current_dir().context("failed to resolve current directory")?;
     let repository = factory::init::discover_repository(&current)?;
-    Ok(repository_config_path(&repository))
+    resolve_repository_config_path(&repository)
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
@@ -1765,15 +1766,13 @@ fn single_line_error(error: &anyhow::Error) -> String {
 }
 
 fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
-    let default_base = dirs::home_dir()
-        .map(|home| home.join(".factory"))
-        .context("could not determine Flashy Factory data directory")?;
-    let global_database = default_base.join(DATABASE_NAME);
-    if global_database.exists() {
-        bail!(
-            "Flashy Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Flashy Factory process, finish or cancel its work, then archive the global ledger before continuing",
-            global_database.display()
-        );
+    for (_, global_database) in default_unscoped_database_paths()? {
+        if global_database.exists() {
+            bail!(
+                "Flashy Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Flashy Factory process, finish or cancel its work, then archive the global ledger before continuing",
+                global_database.display()
+            );
+        }
     }
 
     let Some(unscoped_database) = configured_unscoped_database_path()? else {
@@ -1789,17 +1788,18 @@ fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
 }
 
 fn configured_unscoped_database_path() -> Result<Option<PathBuf>> {
-    let Some(configured_base) = std::env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) else {
-        return Ok(None);
-    };
-    let configured_base = if configured_base.is_absolute() {
-        configured_base
-    } else {
-        std::env::current_dir()
-            .context("failed to resolve current directory")?
-            .join(configured_base)
-    };
-    Ok(Some(configured_base.join(DATABASE_NAME)))
+    Ok(configured_data_home()?.map(|base| base.join(DATABASE_NAME)))
+}
+
+fn default_unscoped_database_paths() -> Result<Vec<(&'static str, PathBuf)>> {
+    let home = dirs::home_dir().context("could not determine Flashy Factory data directory")?;
+    Ok(vec![
+        ("global", home.join(CONFIG_DIRECTORY).join(DATABASE_NAME)),
+        (
+            "legacy-global",
+            home.join(LEGACY_CONFIG_DIRECTORY).join(DATABASE_NAME),
+        ),
+    ])
 }
 
 fn print_poll_report(report: &PollReport) {

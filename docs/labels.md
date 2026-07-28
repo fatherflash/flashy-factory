@@ -60,6 +60,6 @@ content, move sections, or complete tasks.
 
 ## Compatibility note
 
-`.factory/tickets.toml` is retained from the upstream GitHub Project workflow
+`.flashy-factory/tickets.toml` is retained from the upstream GitHub Project workflow
 for existing installations and examples. The Asana workflows do not read it;
 the Asana project sections and tags described here are the source of truth.

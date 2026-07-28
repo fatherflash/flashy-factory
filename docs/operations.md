@@ -32,15 +32,27 @@ and re-entering creates one new task-scoped sandbox. The workflow tells the
 agent to find and continue an existing branch or pull request when appropriate.
 
 Flashy Factory stores durable state and managed worktrees below
-`~/.factory/<repository-hash>/`. Set `FACTORY_DATA_HOME` to override the
-`~/.factory` root. When upgrading an installation that already has state below
-the previous platform data directory, Flashy Factory refuses to select the new default
-while the previous ledger remains and reports the `FACTORY_DATA_HOME` value that
-continues using that state. Flashy Factory also refuses to start while the older global
-`~/.factory/factory.sqlite3` ledger remains, preventing overlap with work owned
-by an old Flashy Factory process regardless of the `FACTORY_DATA_HOME` setting. These
-overlap guards run when `factory run` starts; inspection and cleanup commands
-remain available.
+`~/.flashy-factory/<repository-hash>/`. Set `FLASHY_FACTORY_DATA_HOME` to
+override that root. The older `FACTORY_DATA_HOME` name remains an alias; if both
+variables are set they must resolve to the same directory.
+
+On upgrade, a repository that only has `.factory/config.toml` continues to use
+that configuration and its `.factory/workflows`, clients, and sources in place.
+`factory init` does not create a competing branded directory. New repositories
+use `.flashy-factory`. If both config files exist, Flashy Factory stops and asks
+you to keep one, rather than guessing.
+
+The same no-data-loss rule applies to durable state. When the new default has no
+ledger but `~/.factory/<repository-hash>/factory.sqlite3` exists, Flashy Factory
+continues using the legacy repository directory. If ledgers exist under both
+roots, it stops to prevent split durable work. Flashy Factory also refuses to
+select a new default while a still older platform-data ledger remains, and
+reports the `FLASHY_FACTORY_DATA_HOME` value that keeps using it.
+
+The unscoped ledgers `~/.flashy-factory/factory.sqlite3` and legacy
+`~/.factory/factory.sqlite3` both block startup because queued or running work
+owned by an old process could overlap. These guards run when `factory run`
+starts; inspection and cleanup commands remain available.
 
 ## Fleet operation
 

@@ -118,7 +118,7 @@ fn cleanup_previews_then_removes_a_retained_worktree_and_preserves_its_branch() 
         .unwrap();
     drop(ledger);
 
-    let config = repository.join(".factory/config.toml");
+    let config = repository.join(".flashy-factory/config.toml");
     let run_id = run.id.to_string();
     let mut preview = cleanup_command(&repository, &data_home, &config, &ledger_directory, &run_id);
     preview.assert().success().stdout(
@@ -296,7 +296,7 @@ fn cleanup_retries_an_orphaned_recorded_worktree() {
     assert!(prepared.path.exists());
     let readme_before = fs::read(prepared.path.join("README.md")).unwrap();
 
-    let config = repository.join(".factory/config.toml");
+    let config = repository.join(".flashy-factory/config.toml");
     let run_id = run.id.to_string();
     let mut preview = cleanup_command(&repository, &data_home, &config, &ledger_directory, &run_id);
     preview.assert().success().stdout(

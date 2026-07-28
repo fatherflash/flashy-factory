@@ -12,16 +12,19 @@ use predicates::prelude::*;
 fn reset_previews_then_removes_repository_and_legacy_state() {
     let fixture = Fixture::new();
     finish_task(&fixture.scoped_ledger, "scoped");
+    finish_task(&fixture.global_ledger, "global");
     finish_task(&fixture.legacy_ledger, "legacy");
     finish_task(&fixture.configured_legacy_ledger, "configured-legacy");
 
     fixture.command().assert().success().stdout(
         predicate::str::contains("target: repository")
+            .and(predicate::str::contains("target: global"))
             .and(predicate::str::contains("target: legacy-global"))
             .and(predicate::str::contains("target: configured-global"))
             .and(predicate::str::contains("action: preview only")),
     );
     assert!(fixture.scoped_ledger.join("factory.sqlite3").exists());
+    assert!(fixture.global_ledger.join("factory.sqlite3").exists());
     assert!(fixture.legacy_ledger.join("factory.sqlite3").exists());
     assert!(
         fixture
@@ -37,6 +40,7 @@ fn reset_previews_then_removes_repository_and_legacy_state() {
         .success()
         .stdout(predicate::str::contains("action: removed durable state"));
     assert!(!fixture.scoped_ledger.join("factory.sqlite3").exists());
+    assert!(!fixture.global_ledger.join("factory.sqlite3").exists());
     assert!(!fixture.legacy_ledger.join("factory.sqlite3").exists());
     assert!(
         !fixture
@@ -44,7 +48,12 @@ fn reset_previews_then_removes_repository_and_legacy_state() {
             .join("factory.sqlite3")
             .exists()
     );
-    assert!(fixture.repository.join(".factory/config.toml").exists());
+    assert!(
+        fixture
+            .repository
+            .join(".flashy-factory/config.toml")
+            .exists()
+    );
     assert!(fixture.scoped_ledger.join("worktrees").is_dir());
 }
 
@@ -337,6 +346,7 @@ struct Fixture {
     home: PathBuf,
     data_home: PathBuf,
     scoped_ledger: PathBuf,
+    global_ledger: PathBuf,
     legacy_ledger: PathBuf,
     configured_legacy_ledger: PathBuf,
 }
@@ -381,6 +391,7 @@ impl Fixture {
             .unwrap()
             .unwrap()
             .path();
+        let global_ledger = home.join(".flashy-factory");
         let legacy_ledger = home.join(".factory");
         let configured_legacy_ledger = data_home.clone();
         fs::create_dir_all(scoped_ledger.join("worktrees")).unwrap();
@@ -390,6 +401,7 @@ impl Fixture {
             home,
             data_home,
             scoped_ledger,
+            global_ledger,
             legacy_ledger,
             configured_legacy_ledger,
         }
@@ -401,7 +413,7 @@ impl Fixture {
             .current_dir(&self.repository)
             .env("HOME", &self.home)
             .env("FACTORY_DATA_HOME", &self.data_home)
-            .args(["reset", "--config", ".factory/config.toml"]);
+            .args(["reset", "--config", ".flashy-factory/config.toml"]);
         command
     }
 }

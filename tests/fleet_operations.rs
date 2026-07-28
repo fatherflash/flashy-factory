@@ -95,7 +95,7 @@ fn repository(root: &Path, data_home: &Path, name: &str) -> RepositoryFixture {
         .arg("init")
         .assert()
         .success();
-    let config = path.join(".factory/config.toml");
+    let config = path.join(".flashy-factory/config.toml");
     let contents = fs::read_to_string(&config).unwrap();
     fs::write(
         &config,
@@ -534,7 +534,7 @@ fn live_fleet_operations_use_the_supervisor_startup_snapshot_until_stop() {
     let active = activate_fleet(&fleet_path, &startup, &snapshots).unwrap();
 
     fs::write(
-        first.path.join(".factory/config.toml"),
+        first.path.join(".flashy-factory/config.toml"),
         "this is no longer valid repository configuration",
     )
     .unwrap();

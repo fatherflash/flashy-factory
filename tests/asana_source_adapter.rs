@@ -79,11 +79,11 @@ fn read_request(stream: &mut TcpStream) -> Request {
 }
 
 fn adapter() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/asana")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/asana")
 }
 
 fn client() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/clients/asana")
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/clients/asana")
 }
 
 fn configured(command: &mut Command, api_base: &str) {

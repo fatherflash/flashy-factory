@@ -24,17 +24,17 @@ put it in issue content, logs, or workflow files.
 Copy the Jira workflow examples into Flashy Factory's executable workflow directory:
 
 ```sh
-cp examples/jira-triage.md .factory/workflows/jira-triage.md
-cp examples/jira-implement.md .factory/workflows/jira-implement.md
+cp examples/jira-triage.md .flashy-factory/workflows/jira-triage.md
+cp examples/jira-implement.md .flashy-factory/workflows/jira-implement.md
 ```
 
-Replace the source and workflow paths in `.factory/config.toml`. Adapt the
+Replace the source and workflow paths in `.flashy-factory/config.toml`. Adapt the
 project key, state names, and label to your Jira project:
 
 ```toml
 [source]
 command = [
-  ".factory/sources/jira",
+  ".flashy-factory/sources/jira",
   "--project", "SPS",
   "--max-results", "100",
 ]
@@ -43,13 +43,13 @@ command = [
 type = "source"
 state = "Ready For Spec"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira-triage.md"
+workflow = ".flashy-factory/workflows/jira-triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
 labels = ["factory-ready"]
-workflow = ".factory/workflows/jira-implement.md"
+workflow = ".flashy-factory/workflows/jira-implement.md"
 timeout = "4h"
 ```
 
@@ -63,7 +63,7 @@ Flashy Factory passes only the Jira key, such as `SPS-123`, to the worker. The e
 Jira workflows tell the agent to fetch, comment, update, and transition the
 live ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
 requests. Their source templates live under `examples/`; the default
-`.factory/workflows` directory is tailored to Asana.
+`.flashy-factory/workflows` directory is tailored to Asana.
 
 ## Worker requirements
 
