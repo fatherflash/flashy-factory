@@ -29,7 +29,7 @@ factory inspect RUN_ID [--json]
 Each ticket trigger is durable. Repeated polls and normal restarts do not create
 another task while the issue remains in the same status or label entry. Leaving
 and re-entering creates one new task-scoped sandbox. The workflow tells the
-agent to find and continue an existing branch or pull request when appropriate.
+agent to find and continue an existing branch or change request when appropriate.
 
 Flashy Factory stores durable state and managed worktrees below
 `~/.flashy-factory/<repository-hash>/`. Set `FLASHY_FACTORY_DATA_HOME` to
@@ -71,10 +71,11 @@ mutation commands use its durable fleet and repository configuration startup
 snapshot, even if either file has since been edited. After the process stops,
 commands load the current files.
 
-Each `repository.name` is a pinned GitHub `owner/name` identity. Flashy Factory
-lowercases it for durable identity, verifies the canonical primary checkout and
-its `origin`, and never substitutes another remote or checkout for existing
-state. Relative repository paths resolve from the fleet file's parent
+Each `repository.name` is a pinned provider identity. GitHub uses `owner/name`;
+GitLab.com uses `gitlab.com/namespace/name`, including every subgroup. Flashy
+Factory lowercases it for durable identity, verifies the canonical primary
+checkout and its `origin`, and never substitutes another remote or checkout
+for existing state. Relative repository paths resolve from the fleet file's parent
 directory. A leading `~` and `$NAME` environment variables use the same
 expansion rules as repository configuration. An unset variable is an error.
 
@@ -83,8 +84,8 @@ source-triggered workflows per repository, and polling intervals of at least
 60 seconds. `max_concurrent` limits the fleet. An optional repository
 `max_concurrent` combines with its repository worker limit by taking the lower
 value. Flashy Factory admits eligible repositories round-robin, runs at most two host
-source queries concurrently, deterministically staggers polls, and shares a
-GitHub rate-limit pause across repositories using the same credential.
+source queries concurrently, deterministically staggers polls, and applies a
+shared fleet-wide rate-limit pause when a provider reports rate limiting.
 
 Inspect a running or stopped fleet with:
 
@@ -115,7 +116,8 @@ workflow results replace that aggregate without mixing stale rows.
 add `--all` to include cleaned records.
 
 Read-only task and run lists aggregate every configured repository unless
-`--repository owner/name` filters them. A single `inspect RUN_ID` may omit the
+`--repository <pinned-identity>` filters them, such as `acme/payments` or
+`gitlab.com/group/subgroup/payments`. A single `inspect RUN_ID` may omit the
 selector only when that numeric ID exists in one configured repository. If the
 same ID exists in more than one ledger, Flashy Factory rejects the request and names
 the required selector.
@@ -165,7 +167,7 @@ repositories are outside the VM boundary.
 
 The worker has full privileges inside the microVM, including its own Docker
 daemon, while Docker Sandboxes applies the hypervisor and network boundaries.
-Codex and GitHub credentials are injected by a host proxy and their raw values
+Codex and the configured repository-host credentials are injected by a host proxy and their raw values
 do not enter the VM. Flashy Factory records the sandbox name, template, `sbx` version,
 and limits before creation. Before removal, Flashy Factory snapshots tracked and
 untracked changes in the VM and fetches that commit into trusted host Git
@@ -174,7 +176,7 @@ metadata. If the handoff fails, Flashy Factory stops and retains the sandbox.
 Docker Sandboxes blocks network access unless policy allows it, but allowed
 services and Git remotes still create external effects. Treat all
 issue, comment, attachment, and review text as untrusted input. Use a dedicated
-GitHub identity and protected branches so the worker cannot merge or bypass
+provider identity and protected branches so the worker cannot merge or bypass
 review.
 
 ## Prove an idle poll
@@ -221,7 +223,7 @@ factory cleanup RUN_ID --confirm
 ```
 
 Confirmed cleanup removes only the recorded managed worktree or standalone
-clone. The remote branch and pull request remain. Proposal workspaces are
+clone. The remote branch and change request remain. Proposal workspaces are
 disposable and are removed at a terminal outcome.
 
 ## Reset durable state
@@ -250,7 +252,7 @@ and worktree directories are preserved.
   Sandbox mode, and data-path permissions.
 - `factory run --once` proves polling without launching a model or worker.
 - `factory inspect RUN_ID` shows bounded task, workspace, optional sandbox,
-  branch, pull-request, and error evidence.
+  branch, change-request, and error evidence.
 - `factory status --fleet FLEET` reports each configured repository even when a
   peer is invalid or unavailable. Use its error, failure count, and retry time
   before changing configuration.

@@ -6,13 +6,17 @@ project sections to plain Markdown agent prompts.
 
 ## Install
 
-Install Python 3, Rust, Git, GitHub CLI, and Codex CLI on a Unix-like host. The
-`sbx` CLI and supported hardware virtualization are also required for Docker
-Sandbox workers.
+Install Python 3, Rust, Git, the GitHub CLI for GitHub repositories or
+GitHub-backed ticket sources, the GitLab CLI for GitLab.com repositories, and
+the Codex CLI on a Unix-like host. The `sbx` CLI and supported hardware
+virtualization are also required for Docker Sandbox workers.
 
 ```sh
+# For a GitHub-managed repository or GitHub-backed ticket source:
 gh auth login
 gh auth status
+# For a GitLab.com-managed repository:
+glab auth login --hostname gitlab.com
 codex login
 git clone https://github.com/fatherflash/flashy-factory.git
 cd flashy-factory
@@ -24,8 +28,15 @@ cargo install --path . --locked
 Change to the trusted repository Flashy Factory will manage:
 
 ```sh
+factory init --check
 factory init
 ```
+
+`factory init --check` previews the files and durable resources without
+writing them. Initialization detects the repository's GitHub or GitLab.com
+origin and records its provider and canonical identity. GitHub keeps the
+existing `owner/repository` identity; GitLab includes every subgroup, for
+example `gitlab.com/group/subgroup/repository`.
 
 Initialization creates missing files without overwriting existing ones:
 
@@ -78,6 +89,19 @@ timezone = "Europe/London"
 workflow = ".flashy-factory/workflows/bug-finder.md"
 ```
 
+For a GitLab.com repository, `factory init` writes the detected provider and
+host-qualified identity. The equivalent repository section is:
+
+```toml
+[repository]
+provider = "gitlab"
+identity = "gitlab.com/group/subgroup/repository"
+```
+
+Do not replace a GitLab identity with only `group/repository`; every subgroup
+is part of the repository identity. Existing GitHub configurations without a
+`[repository]` section continue to mean GitHub for compatibility.
+
 The state and optional label names are passed to the repository's source
 adapter. They are not hard-coded pipeline roles. `.flashy-factory/sources/asana`
 matches an exact Asana section and optional exact tag names in
@@ -121,8 +145,9 @@ If this ticket changes visible behaviour, read and follow
 ```
 
 Flashy Factory supplies the task identity and execution context. The agent
-rereads live Asana state and owns the adaptive Asana, GitHub pull-request, and
-engineering actions.
+rereads live Asana state and owns the adaptive Asana, repository-hosting, and
+engineering actions. Use `gh` for GitHub pull requests or `glab` for GitLab
+merge requests; Flashy Factory only records the matching change-request URL.
 
 ## Source adapter contract
 
@@ -140,7 +165,9 @@ and returns provider-neutral JSON. Treat permission to move tasks into a
 trigger section or apply a required tag as the trust boundary.
 
 The repository retains GitHub and [Jira](jira.md) adapters as compatibility
-examples of the same contract.
+examples of the same contract. The ticket source remains independent from the
+managed repository host: a GitLab repository can use a command-backed source
+or the legacy GitHub source without using `gh` for GitLab repository effects.
 
 ## Validate and run
 
@@ -226,7 +253,7 @@ implementation flow. It creates a real Asana task in `Ready For Spec`:
 Then run `cargo run -- run`. The specification agent refines the idea and moves
 it to `Awaiting Approval`. Review the task and move it to
 `Ready To Implement`. The same Flashy Factory process starts the implementation
-agent, which writes the code and opens a pull request. Use a fresh idea each
+agent, which writes the code and opens a change request. Use a fresh idea each
 time you repeat the demo.
 
 ## Use Docker Sandbox workers
@@ -237,18 +264,22 @@ starting Flashy Factory:
 ```sh
 sbx login
 sbx secret set -g openai --oauth
+# For a GitHub-managed repository:
 gh auth token | sbx secret set -g github
+# For a GitLab.com-managed repository:
+glab config get token --host gitlab.com | sbx secret set -g gitlab
 ```
 
 The Asana client and token are not injected into Docker workers by this
 repository. Asana-backed source workflows therefore require worktree mode until
 you define and review an explicit sandbox credential policy.
 
-Export a dedicated GitHub token through the variable named by
-`worker.github_token_env`. Flashy Factory uses this token only on the host while
-preparing its standalone source clone. The agent receives the separate
-proxy-managed GitHub credential configured with `sbx secret`; the raw value does
-not enter the sandbox.
+Export a dedicated repository token through the provider-specific variable named
+by the worker configuration. Flashy Factory uses this token only on the host
+while preparing its standalone source clone. The agent receives the separate
+proxy-managed credential configured with `sbx secret`; the raw value does not
+enter the sandbox. GitHub uses `worker.github_token_env` and the `github`
+secret; GitLab uses `worker.gitlab_token_env` and the `gitlab` secret.
 
 A complete Docker Sandbox worker section is:
 
@@ -262,7 +293,9 @@ max_concurrent = 1
 template = "docker/sandbox-templates:codex-docker"
 memory = "8g"
 cpus = 4
-github_token_env = "FACTORY_GITHUB_TOKEN"
+github_token_env = "FACTORY_GITHUB_TOKEN" # GitHub repositories
+# GitLab repositories use this instead:
+# gitlab_token_env = "FACTORY_GITLAB_TOKEN"
 ```
 
 Each run gets a disposable clone-mode microVM with a private Docker daemon. The
@@ -283,6 +316,6 @@ factory cancel RUN_ID
 
 Flashy Factory stores task identity, source revision, attempts, bounded logs, outcomes,
 and sandbox metadata outside the repository. On restart it reconciles durable
-state before claiming new work. Agents are instructed to inspect current GitHub
-state before acting, which makes a recovery run reconcile rather than blindly
-repeat Git and pull request operations.
+state before claiming new work. Agents are instructed to inspect current Git
+and the configured repository host before acting, which makes a recovery run
+reconcile rather than blindly repeat Git and change-request operations.
