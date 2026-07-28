@@ -25,7 +25,6 @@ use crate::fleet::{
 use crate::forge::{Forge, forge_for_with_github};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
 use crate::hash::sha256_hex_prefix;
-use crate::repository::RepositoryProvider;
 use crate::runtime::{
     AgentRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     build_runtime, observation_channel,
@@ -1396,7 +1395,9 @@ impl FactoryDaemon {
             &mut ledger,
             &self.ledger_path,
             &repository_owner,
-            self.sandbox.as_ref().map(SandboxWorker::github_token_env),
+            self.sandbox
+                .as_ref()
+                .map(SandboxWorker::repository_token_env),
             true,
         ) {
             eprintln!("Flashy Factory workspace startup reconciliation failed: {error:#}");
@@ -1494,6 +1495,7 @@ impl FactoryDaemon {
                     &self.ledger_path,
                     &self.runtime,
                     self.sandbox.as_ref(),
+                    &self.forge,
                     &self.github,
                     &self.source,
                     self.config.source.as_ref(),
@@ -1513,7 +1515,9 @@ impl FactoryDaemon {
                             &mut ledger,
                             &self.ledger_path,
                             &repository_owner,
-                            self.sandbox.as_ref().map(SandboxWorker::github_token_env),
+                            self.sandbox
+                                .as_ref()
+                                .map(SandboxWorker::repository_token_env),
                             true,
                         )?;
                     }
@@ -1688,13 +1692,8 @@ impl FactoryDaemon {
         }
         self.catalog.validate_ticket_workflows()?;
         if let Some(sandbox) = &self.sandbox {
-            if self.config.repository.provider == RepositoryProvider::GitLab {
-                bail!(
-                    "GitLab Docker Sandbox credentials require provider-aware worker credentials"
-                );
-            }
-            self.github
-                .validate_token_env(sandbox.github_token_env(), cancellation)
+            self.forge
+                .validate_worker_token_env(sandbox.repository_token_env(), cancellation)
                 .await?;
             sandbox.validate(cancellation).await?;
         }
@@ -1728,11 +1727,6 @@ impl FactoryDaemon {
                 .as_deref()
                 .unwrap_or(&self.config.repository.identity)
                 .to_owned();
-            if self.forge.provider() == RepositoryProvider::GitLab {
-                bail!(
-                    "GitLab repository validation succeeded, but task execution requires provider-aware workspace operations"
-                );
-            }
             if let Some(source) = &self.config.source {
                 if source.command.is_empty() {
                     self.github.validate_global(cancellation).await?;
@@ -1998,7 +1992,7 @@ fn reconcile_pending_cleanup(
         return Ok(());
     }
     let manager = WorkspaceManager::new(&owner.path, &owner.workspace_root)?;
-    let clone_manager = CloneManager::new(&owner.workspace_root)?;
+    let clone_manager = CloneManager::for_identity(&owner.workspace_root, &owner.identity)?;
     manager.reconcile_startup()?;
     for workspace in workspaces {
         if !workspace.path.exists() {
@@ -2081,11 +2075,12 @@ fn automatic_cleanup_is_still_safe(
     if task.state != TaskState::Succeeded {
         return Ok(false);
     }
-    let clone_manager = CloneManager::new(
+    let clone_manager = CloneManager::for_identity(
         workspace
             .path
             .parent()
             .context("workspace clone has no managed root")?,
+        &workspace.repository,
     )?;
     let preview = if workspace.backend == "clone" {
         clone_manager.preview_cleanup(&workspace.path)?
@@ -2230,6 +2225,7 @@ async fn dispatch_available(
     ledger_path: &Path,
     runtime: &Arc<dyn AgentRuntime>,
     sandbox: Option<&SandboxWorker>,
+    forge: &Arc<dyn Forge>,
     github: &GitHubClient,
     source_client: &SourceClient,
     source_config: Option<&SourceConfig>,
@@ -2347,6 +2343,7 @@ async fn dispatch_available(
         *active.entry(repository.clone()).or_default() += 1;
         let runtime = Arc::clone(runtime);
         let sandbox = sandbox.cloned();
+        let forge = Arc::clone(forge);
         let github = github.clone();
         let source_client = source_client.clone();
         let source_config = source_config.cloned();
@@ -2431,14 +2428,16 @@ async fn dispatch_available(
             let sandboxed = sandbox.is_some();
             let execution_target = match prepare_task_workspace(
                 &mut worker_ledger,
-                &github,
+                &forge,
                 &target,
                 &repository,
                 &workspace_root,
                 &task,
                 run_id,
                 sandboxed,
-                sandbox.as_ref().map(|worker| worker.github_token_env()),
+                sandbox
+                    .as_ref()
+                    .map(|worker| worker.repository_token_env()),
                 &cancellation,
             )
             .await
@@ -2535,7 +2534,9 @@ async fn dispatch_available(
                 },
                 task.id,
                 run_id,
-                sandbox.as_ref().map(SandboxWorker::github_token_env),
+                sandbox
+                    .as_ref()
+                    .map(SandboxWorker::repository_token_env),
             ) {
                 eprintln!("Flashy Factory workspace finalization failed for run {run_id}: {error:#}");
             }
@@ -2548,14 +2549,14 @@ async fn dispatch_available(
 #[allow(clippy::too_many_arguments)]
 async fn prepare_task_workspace(
     ledger: &mut Ledger,
-    github: &GitHubClient,
+    forge: &Arc<dyn Forge>,
     canonical_target: &RepositoryTarget,
     repository_identity: &str,
     workspace_root: &Path,
     task: &Task,
     run_id: i64,
     sandboxed: bool,
-    github_token_env: Option<&str>,
+    repository_token_env: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<RepositoryTarget> {
     let workspace_root = workspace_root
@@ -2597,16 +2598,16 @@ async fn prepare_task_workspace(
         }
         existing
     } else {
-        let base_branch = github
-            .repository_default_branch(&canonical_target.path, cancellation)
+        let base_branch = forge
+            .default_branch(&canonical_target.path, cancellation)
             .await?;
         let base_sha = manager.fetch_default_branch(&base_branch)?;
-        let confirmed_branch = github
-            .repository_default_branch(&canonical_target.path, cancellation)
+        let confirmed_branch = forge
+            .default_branch(&canonical_target.path, cancellation)
             .await?;
         if confirmed_branch != base_branch {
             bail!(
-                "GitHub default branch changed from {base_branch:?} to {confirmed_branch:?} during workspace preparation"
+                "repository default branch changed from {base_branch:?} to {confirmed_branch:?} during workspace preparation"
             );
         }
         let candidate =
@@ -2623,8 +2624,9 @@ async fn prepare_task_workspace(
         );
     }
     if sandboxed {
-        let token_env = github_token_env.context("sandboxed clone has no GitHub token source")?;
-        let clone_manager = CloneManager::new(&workspace_root)?;
+        let token_env =
+            repository_token_env.context("sandboxed clone has no repository token source")?;
+        let clone_manager = CloneManager::with_forge(&workspace_root, Arc::clone(forge))?;
         let clone = if workspace.factory_branch.is_some() {
             let ticket = ticket_summary(task)?;
             clone_manager.prepare(
@@ -2822,7 +2824,7 @@ fn finalize_task_workspace(
         );
     }
     let manager = WorkspaceManager::new(&owner.path, &owner.workspace_root)?;
-    let clone_manager = CloneManager::new(&owner.workspace_root)?;
+    let clone_manager = CloneManager::for_identity(&owner.workspace_root, &owner.identity)?;
     if workspace.kind == "proposal" {
         ledger.update_task_workspace_state(
             task_id,
@@ -4913,9 +4915,13 @@ mod tests {
                 path: repository.clone(),
                 workflows: HashMap::from([("review".into(), workflow.clone())]),
             };
+            let forge = forge_for_with_github(
+                crate::repository::RepositoryProvider::GitHub,
+                github.clone(),
+            );
             let execution_target = prepare_task_workspace(
                 &mut ledger,
-                github,
+                &forge,
                 &target,
                 identity,
                 &workspace_root,
@@ -5387,5 +5393,144 @@ mod tests {
             first.task_workspace(first_tasks[2]).unwrap().unwrap().state,
             "retained"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gitlab_worktree_task_resolves_default_branch_with_glab_and_pushes_with_git() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        fn run(directory: &Path, arguments: &[&str]) {
+            assert!(
+                Command::new("git")
+                    .args(arguments)
+                    .current_dir(directory)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {arguments:?}"
+            );
+        }
+
+        fn output(directory: &Path, arguments: &[&str]) -> String {
+            let output = Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {arguments:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote.git");
+        let repository = temp.path().join("repository");
+        let workspaces = temp.path().join("workspaces");
+        fs::create_dir(&repository).unwrap();
+        fs::create_dir(&workspaces).unwrap();
+        run(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        run(&repository, &["init"]);
+        run(&repository, &["config", "user.name", "Factory Test"]);
+        run(
+            &repository,
+            &["config", "user.email", "factory@example.invalid"],
+        );
+        fs::write(repository.join("README.md"), "initial\n").unwrap();
+        run(&repository, &["add", "README.md"]);
+        run(&repository, &["commit", "-m", "initial"]);
+        run(&repository, &["branch", "-M", "main"]);
+        run(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run(&repository, &["push", "-u", "origin", "main"]);
+
+        let log = temp.path().join("glab.log");
+        let glab = temp.path().join("glab");
+        fs::write(
+            &glab,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' main\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&glab).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&glab, permissions).unwrap();
+        let forge = crate::forge::forge_for_with_executable(
+            crate::repository::RepositoryProvider::GitLab,
+            glab,
+        );
+
+        let ledger_path = temp.path().join("factory.sqlite3");
+        let mut ledger = Ledger::open(&ledger_path).unwrap();
+        let task = ledger
+            .enqueue(
+                &TaskIdentity::scheduled(
+                    "gitlab.com/group/subgroup/repository",
+                    "review",
+                    "2026-07-28T12:00:00Z",
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let run_record = ledger.start_run(task.id, "codex").unwrap();
+        let target = RepositoryTarget {
+            path: repository.canonicalize().unwrap(),
+            workflows: HashMap::new(),
+        };
+        let prepared = prepare_task_workspace(
+            &mut ledger,
+            &forge,
+            &target,
+            "gitlab.com/group/subgroup/repository",
+            &workspaces,
+            &task,
+            run_record.id,
+            false,
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        run(&prepared.path, &["config", "user.name", "Factory Test"]);
+        run(
+            &prepared.path,
+            &["config", "user.email", "factory@example.invalid"],
+        );
+        fs::write(prepared.path.join("task.txt"), "completed\n").unwrap();
+        run(&prepared.path, &["add", "task.txt"]);
+        run(&prepared.path, &["commit", "-m", "complete GitLab task"]);
+        run(
+            &prepared.path,
+            &["push", "origin", "HEAD:refs/heads/factory/gitlab-test"],
+        );
+
+        assert_eq!(
+            output(&prepared.path, &["rev-parse", "HEAD"]),
+            output(
+                temp.path(),
+                &[
+                    "--git-dir",
+                    remote.to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/factory/gitlab-test",
+                ],
+            )
+        );
+        let commands = fs::read_to_string(log).unwrap();
+        assert_eq!(
+            commands
+                .matches("repo view --output json --jq .default_branch")
+                .count(),
+            2
+        );
+        assert!(!commands.contains("gh"));
     }
 }

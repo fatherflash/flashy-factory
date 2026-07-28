@@ -23,7 +23,7 @@ fn create_workspace_for_identity(
     repository: &std::path::Path,
     data_home: &std::path::Path,
     identity: &str,
-) {
+) -> std::path::PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(identity.as_bytes());
     hasher.update(b"\0");
@@ -39,7 +39,9 @@ fn create_workspace_for_identity(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    fs::create_dir_all(data_home.join(&digest[..20]).join("worktrees")).unwrap();
+    let state = data_home.join(&digest[..20]);
+    fs::create_dir_all(state.join("worktrees")).unwrap();
+    state
 }
 
 fn valid_config() -> (
@@ -153,7 +155,11 @@ fn command_with_gitlab_forge(temp: &tempfile::TempDir, log: &std::path::Path) ->
         ),
         (
             "glab",
-            "#!/bin/sh\nprintf 'glab %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"--version\" ]; then echo 'glab 1.80.0'; exit 0; fi\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"repo view\" ]; then echo 'example/subgroup/repository'; exit 0; fi\nexit 64\n",
+            "#!/bin/sh\nprintf 'glab %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"--version\" ]; then echo 'glab 1.80.0'; exit 0; fi\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"repo view\" ]; then echo 'example/subgroup/repository'; exit 0; fi\nif [ \"$1 $2\" = \"api user\" ]; then test \"$GITLAB_TOKEN\" = 'gitlab-worker-token'; exit 0; fi\nexit 64\n",
+        ),
+        (
+            "sbx",
+            "#!/bin/sh\nprintf 'sbx %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"version\" ]; then echo 'sbx version 0.35.0'; exit 0; fi\nif [ \"$1 $2 $3 $4 $5\" = \"secret ls --global --service openai\" ]; then echo 'global service openai'; exit 0; fi\nif [ \"$1 $2 $3 $4 $5\" = \"secret ls --global --service gitlab\" ]; then echo 'global service gitlab'; exit 0; fi\nexit 64\n",
         ),
         (
             "gh",
@@ -233,7 +239,7 @@ fn validates_gitlab_repository_with_glab_and_keeps_github_source_separate() {
 
 #[cfg(unix)]
 #[test]
-fn gitlab_run_stops_after_forge_validation_without_creating_a_ledger() {
+fn gitlab_run_once_passes_forge_validation_and_creates_its_ledger() {
     let (temp, path, repository, data_home) = valid_config();
     assert!(
         ProcessCommand::new("git")
@@ -249,7 +255,23 @@ fn gitlab_run_stops_after_forge_validation_without_creating_a_ledger() {
             .success()
     );
     pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
-    create_workspace_for_identity(
+    let contents = fs::read_to_string(&path)
+        .unwrap()
+        .replace(
+            "type = \"github\"\nproject_owner = \"example\"\nproject_number = 16\nstatus_field = \"Status\"\ntrusted_users = [\"example\"]",
+            "command = [\"./.flashy-factory/source.sh\"]",
+        )
+        .replace(
+            "type = \"label\"\nlabel = \"agent:ready\"",
+            "type = \"source\"\nstate = \"open\"\nlabels = [\"agent:ready\"]",
+        );
+    fs::write(&path, contents).unwrap();
+    let source = repository.join(".flashy-factory/source.sh");
+    fs::write(&source, "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[]}'\n").unwrap();
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(source, permissions).unwrap();
+    let gitlab_state = create_workspace_for_identity(
         &repository,
         &data_home,
         "gitlab.com/example/subgroup/repository",
@@ -261,18 +283,9 @@ fn gitlab_run_stops_after_forge_validation_without_creating_a_ledger() {
         .args(["run", "--once", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", &data_home)
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "GitLab repository validation succeeded, but task execution requires provider-aware workspace operations",
-        ));
+        .success();
 
-    let state_directory = fs::read_dir(&data_home)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .find(|directory| directory.join("worktrees").exists())
-        .unwrap();
-    assert!(!state_directory.join("factory.sqlite3").exists());
+    assert!(gitlab_state.join("factory.sqlite3").exists());
     let commands = fs::read_to_string(log).unwrap();
     assert!(commands.contains("glab repo view"));
     assert!(!commands.contains("gh "));
@@ -280,7 +293,7 @@ fn gitlab_run_stops_after_forge_validation_without_creating_a_ledger() {
 
 #[cfg(unix)]
 #[test]
-fn gitlab_docker_validation_stops_before_github_worker_credentials() {
+fn gitlab_docker_validation_uses_gitlab_worker_credentials_and_secret() {
     let (temp, path, repository, data_home) = valid_config();
     assert!(
         ProcessCommand::new("git")
@@ -309,7 +322,7 @@ fn gitlab_docker_validation_stops_before_github_worker_credentials() {
         .replace("sandbox = \"worktree\"", "sandbox = \"docker_sandbox\"")
         .replace(
             "max_concurrent = 2",
-            "max_concurrent = 2\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"8g\"\ncpus = 4\ngithub_token_env = \"FACTORY_GITHUB_TOKEN\"",
+            "max_concurrent = 2\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"8g\"\ncpus = 4\ngitlab_token_env = \"FACTORY_GITLAB_TOKEN\"",
         );
     fs::write(&path, contents).unwrap();
     let source = repository.join(".flashy-factory/source.sh");
@@ -327,15 +340,16 @@ fn gitlab_docker_validation_stops_before_github_worker_credentials() {
     command_with_gitlab_forge(&temp, &log)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", &data_home)
+        .env("FACTORY_GITLAB_TOKEN", "gitlab-worker-token")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "GitLab Docker Sandbox credentials require provider-aware worker credentials",
-        ));
+        .success();
 
     let commands = fs::read_to_string(log).unwrap();
     assert!(commands.contains("glab repo view"));
+    assert!(commands.contains("glab api user"));
+    assert!(commands.contains("sbx secret ls --global --service gitlab"));
     assert!(!commands.contains("gh "));
+    assert!(!commands.contains("gitlab-worker-token"));
 }
 
 #[test]

@@ -90,7 +90,8 @@ pub struct WorkerConfig {
     pub template: String,
     pub memory: String,
     pub cpus: u32,
-    pub github_token_env: String,
+    pub repository_provider: RepositoryProvider,
+    pub repository_token_env: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ struct RawWorkerConfig {
     memory: Option<String>,
     cpus: Option<u32>,
     github_token_env: Option<String>,
+    gitlab_token_env: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -326,7 +328,9 @@ impl Config {
                 reject_sandbox_options(&raw.worker)?;
                 None
             }
-            ExecutionMode::DockerSandbox => Some(resolve_worker(raw.worker)?),
+            ExecutionMode::DockerSandbox => {
+                Some(resolve_worker(raw.worker, repository_config.provider)?)
+            }
         };
         let workspace_candidate = data_directory.join("worktrees");
         let workspace_root = if allow_missing_workspace {
@@ -402,10 +406,14 @@ impl fmt::Display for Config {
             writeln!(formatter, "worker.template: {}", worker.template)?;
             writeln!(formatter, "worker.memory: {}", worker.memory)?;
             writeln!(formatter, "worker.cpus: {}", worker.cpus)?;
+            let token_setting = match worker.repository_provider {
+                RepositoryProvider::GitHub => "worker.github_token_env",
+                RepositoryProvider::GitLab => "worker.gitlab_token_env",
+            };
             writeln!(
                 formatter,
-                "worker.github_token_env: {}",
-                worker.github_token_env
+                "{token_setting}: {}",
+                worker.repository_token_env
             )?;
         }
         if let Some(source) = &self.source {
@@ -685,13 +693,14 @@ fn reject_sandbox_options(raw: &RawWorkerConfig) -> Result<()> {
         || raw.memory.is_some()
         || raw.cpus.is_some()
         || raw.github_token_env.is_some()
+        || raw.gitlab_token_env.is_some()
     {
         bail!("worker sandbox \"worktree\" does not accept Docker Sandbox settings");
     }
     Ok(())
 }
 
-fn resolve_worker(raw: RawWorkerConfig) -> Result<WorkerConfig> {
+fn resolve_worker(raw: RawWorkerConfig, provider: RepositoryProvider) -> Result<WorkerConfig> {
     let template = raw
         .template
         .as_deref()
@@ -741,26 +750,40 @@ fn resolve_worker(raw: RawWorkerConfig) -> Result<WorkerConfig> {
     if cpus == 0 {
         bail!("worker.cpus must be greater than zero");
     }
-    let github_token_env = raw
-        .github_token_env
-        .unwrap_or_else(|| "FACTORY_GITHUB_TOKEN".to_owned());
-    let github_token_env = github_token_env.trim();
-    if github_token_env.is_empty()
-        || !github_token_env
+    let token_env = match provider {
+        RepositoryProvider::GitHub => {
+            if raw.gitlab_token_env.is_some() {
+                bail!("worker.gitlab_token_env is only valid for GitLab repositories");
+            }
+            raw.github_token_env
+                .unwrap_or_else(|| "FACTORY_GITHUB_TOKEN".to_owned())
+        }
+        RepositoryProvider::GitLab => {
+            if raw.github_token_env.is_some() {
+                bail!("worker.github_token_env is only valid for GitHub repositories");
+            }
+            raw.gitlab_token_env
+                .unwrap_or_else(|| "FACTORY_GITLAB_TOKEN".to_owned())
+        }
+    };
+    let token_env = token_env.trim();
+    if token_env.is_empty()
+        || !token_env
             .chars()
             .next()
             .is_some_and(|character| character.is_ascii_alphabetic() || character == '_')
-        || !github_token_env
+        || !token_env
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_')
     {
-        bail!("worker.github_token_env must be a valid environment variable name");
+        bail!("worker repository token environment must be a valid environment variable name");
     }
     Ok(WorkerConfig {
         template: template.to_owned(),
         memory,
         cpus,
-        github_token_env: github_token_env.to_owned(),
+        repository_provider: provider,
+        repository_token_env: token_env.to_owned(),
     })
 }
 

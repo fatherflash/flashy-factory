@@ -107,8 +107,15 @@ impl SandboxWorker {
         &self.instance_id
     }
 
-    pub fn github_token_env(&self) -> &str {
-        &self.config.github_token_env
+    pub fn repository_token_env(&self) -> &str {
+        &self.config.repository_token_env
+    }
+
+    pub fn repository_secret_name(&self) -> &'static str {
+        match self.config.repository_provider {
+            crate::repository::RepositoryProvider::GitHub => "github",
+            crate::repository::RepositoryProvider::GitLab => "gitlab",
+        }
     }
 
     pub fn limits_json(&self) -> String {
@@ -131,7 +138,8 @@ impl SandboxWorker {
             bail!("Docker Sandboxes returned an empty version");
         }
         self.validate_secret("openai", cancellation).await?;
-        self.validate_secret("github", cancellation).await?;
+        self.validate_secret(self.repository_secret_name(), cancellation)
+            .await?;
         Ok(version.to_owned())
     }
 
@@ -150,6 +158,8 @@ impl SandboxWorker {
         {
             let setup = if service == "openai" {
                 "sbx secret set -g openai --oauth"
+            } else if service == "gitlab" {
+                "glab config get token --host gitlab.com | sbx secret set -g gitlab"
             } else {
                 "gh auth token | sbx secret set -g github"
             };
@@ -530,9 +540,11 @@ impl SandboxWorker {
             .current_dir(clone)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env_remove(&self.config.github_token_env)
+            .env_remove(&self.config.repository_token_env)
             .env_remove("GH_TOKEN")
             .env_remove("GITHUB_TOKEN")
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GLAB_TOKEN")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -793,7 +805,8 @@ mod tests {
                 template: "docker/sandbox-templates:codex".to_owned(),
                 memory: "4g".to_owned(),
                 cpus: 2,
-                github_token_env: "FACTORY_GITHUB_TOKEN".to_owned(),
+                repository_provider: crate::repository::RepositoryProvider::GitHub,
+                repository_token_env: "FACTORY_GITHUB_TOKEN".to_owned(),
             },
             "test-instance",
         )
@@ -827,6 +840,94 @@ esac
             .unwrap();
 
         assert_eq!(version, "sbx version 0.35.0");
+    }
+
+    #[tokio::test]
+    async fn gitlab_worker_validates_only_the_gitlab_repository_secret() {
+        let temp = tempfile::tempdir().unwrap();
+        let sbx = temp.path().join("sbx");
+        let log = temp.path().join("commands.log");
+        executable(
+            &sbx,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> '{}'
+case "$1 ${{2:-}}" in
+  'version ') printf '%s\n' 'sbx version 0.35.0' ;;
+  'secret ls')
+    [ "$3" = --global ]
+    [ "$4" = --service ]
+    printf '%s\n' "global service $5"
+    ;;
+  *) exit 1 ;;
+esac
+"#,
+                log.display()
+            ),
+        );
+        let worker = SandboxWorker::new(
+            WorkerConfig {
+                template: "docker/sandbox-templates:codex".to_owned(),
+                memory: "4g".to_owned(),
+                cpus: 2,
+                repository_provider: crate::repository::RepositoryProvider::GitLab,
+                repository_token_env: "FACTORY_GITLAB_TOKEN".to_owned(),
+            },
+            "test-instance",
+        )
+        .with_executable(&sbx)
+        .with_activity_streaming(false);
+
+        worker.validate(&CancellationToken::new()).await.unwrap();
+
+        let commands = fs::read_to_string(log).unwrap();
+        assert!(commands.contains("secret ls --global --service gitlab"));
+        assert!(!commands.contains("service github"));
+    }
+
+    #[tokio::test]
+    async fn missing_gitlab_secret_reports_gitlab_setup_guidance() {
+        let temp = tempfile::tempdir().unwrap();
+        let sbx = temp.path().join("sbx");
+        executable(
+            &sbx,
+            r#"#!/bin/sh
+set -eu
+case "$1 ${2:-}" in
+  'version ') printf '%s\n' 'sbx version 0.35.0' ;;
+  'secret ls')
+    [ "$3" = --global ]
+    [ "$4" = --service ]
+    if [ "$5" = openai ]; then printf '%s\n' 'global service openai'; fi
+    ;;
+  *) exit 1 ;;
+esac
+"#,
+        );
+        let worker = SandboxWorker::new(
+            WorkerConfig {
+                template: "docker/sandbox-templates:codex".to_owned(),
+                memory: "4g".to_owned(),
+                cpus: 2,
+                repository_provider: crate::repository::RepositoryProvider::GitLab,
+                repository_token_env: "FACTORY_GITLAB_TOKEN".to_owned(),
+            },
+            "test-instance",
+        )
+        .with_executable(&sbx)
+        .with_activity_streaming(false);
+
+        let error = worker
+            .validate(&CancellationToken::new())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("glab config get token --host gitlab.com | sbx secret set -g gitlab")
+        );
+        assert!(!error.contains("gh auth token"));
     }
 
     #[tokio::test]

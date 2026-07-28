@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
+use crate::forge::{Forge, forge_for};
+use crate::repository::{RepositoryProvider, RepositoryRef};
 use crate::workspace::{CleanupPreview, WorkspaceManager};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,11 +17,11 @@ pub struct StandaloneClone {
     pub base_sha: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CloneManager {
     root: PathBuf,
-    gh_executable: PathBuf,
     git_executable: PathBuf,
+    forge: Arc<dyn Forge>,
 }
 
 impl CloneManager {
@@ -31,9 +34,25 @@ impl CloneManager {
         }
         Ok(Self {
             root,
-            gh_executable: PathBuf::from("gh"),
             git_executable: PathBuf::from("git"),
+            forge: forge_for(RepositoryProvider::GitHub),
         })
+    }
+
+    pub fn with_forge(root: &Path, forge: Arc<dyn Forge>) -> Result<Self> {
+        let mut manager = Self::new(root)?;
+        manager.forge = forge;
+        Ok(manager)
+    }
+
+    pub fn for_identity(root: &Path, identity: &str) -> Result<Self> {
+        let provider = if identity.starts_with("gitlab.com/") {
+            RepositoryProvider::GitLab
+        } else {
+            RepositoryProvider::GitHub
+        };
+        validate_repository(provider, identity)?;
+        Self::with_forge(root, forge_for(provider))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -46,12 +65,12 @@ impl CloneManager {
         base_branch: &str,
         base_sha: &str,
         implementation: bool,
-        github_token_env: &str,
+        repository_token_env: &str,
     ) -> Result<StandaloneClone> {
         if task_id <= 0 || (implementation && issue == 0) {
             bail!("clone task IDs and implementation issue IDs must be positive");
         }
-        validate_repository(repository)?;
+        validate_repository(self.forge.provider(), repository)?;
         validate_revision(base_sha)?;
         let path = if implementation {
             self.root.join(format!("issue-{issue}"))
@@ -59,10 +78,11 @@ impl CloneManager {
             self.root.join(format!("triage-{task_id}"))
         };
         self.ensure_managed_path(&path)?;
-        let token = std::env::var(github_token_env)
-            .with_context(|| format!("GitHub token environment {github_token_env:?} is missing"))?;
+        let token = std::env::var(repository_token_env).with_context(|| {
+            format!("repository token environment {repository_token_env:?} is missing")
+        })?;
         if token.trim().is_empty() {
-            bail!("GitHub token environment {github_token_env:?} is empty");
+            bail!("repository token environment {repository_token_env:?} is empty");
         }
         if !path.exists() {
             let staging = tempfile::Builder::new()
@@ -70,33 +90,34 @@ impl CloneManager {
                 .tempdir_in(&self.root)
                 .context("failed to create clone staging directory")?;
             let staged_clone = staging.path().join("repository");
-            let clone_url = format!("https://github.com/{repository}.git");
-            let status = Command::new(&self.gh_executable)
-                .args(["repo", "clone", &clone_url])
-                .arg(&staged_clone)
-                .args(["--", "--no-checkout", "--no-tags"])
-                .env("GH_TOKEN", &token)
-                .status()
-                .context("failed to start gh repo clone")?;
-            if !status.success() {
-                bail!("gh repo clone failed with {status}");
-            }
+            self.forge
+                .clone_repository(repository, &staged_clone, &token)?;
             if !staged_clone.join(".git").is_dir() {
-                bail!("gh repo clone did not produce standalone Git metadata");
+                bail!("repository CLI clone did not produce standalone Git metadata");
             }
             fs::rename(&staged_clone, &path).with_context(|| {
                 format!("failed to publish completed clone at {}", path.display())
             })?;
         }
-        self.require_standalone_clone(&path, repository)?;
+        self.require_standalone_clone(&path, repository, &token)?;
+        let credentials = self.forge.git_credentials();
+        git(
+            &self.git_executable,
+            &path,
+            ["config", "--replace-all", credentials.credential_key, ""],
+            credentials.token_variable,
+            &token,
+        )?;
         git(
             &self.git_executable,
             &path,
             [
                 "config",
-                "credential.https://github.com.helper",
-                "!gh auth git-credential",
+                "--add",
+                credentials.credential_key,
+                credentials.credential_helper,
             ],
+            credentials.token_variable,
             &token,
         )?;
         let remote_ref = format!("refs/remotes/origin/{base_branch}");
@@ -105,6 +126,7 @@ impl CloneManager {
             &self.git_executable,
             &path,
             ["fetch", "--no-tags", "origin", &refspec],
+            credentials.token_variable,
             &token,
         )?;
         let revision = format!("{base_sha}^{{commit}}");
@@ -112,6 +134,7 @@ impl CloneManager {
             &self.git_executable,
             &path,
             ["rev-parse", "--verify", &revision],
+            credentials.token_variable,
             &token,
         )?;
         if resolved.trim() != base_sha {
@@ -124,12 +147,20 @@ impl CloneManager {
             let local_branch = Command::new(&self.git_executable)
                 .args(["show-ref", "--verify", "--quiet", &source_branch])
                 .current_dir(&path)
-                .env("GH_TOKEN", &token)
+                .env(credentials.token_variable, &token)
+                .env_remove(competing_token_variable(credentials.token_variable))
+                .env_remove(competing_legacy_token_variable(credentials.token_variable))
                 .status()
                 .context("failed to inspect local implementation branch")?
                 .code();
             if local_branch == Some(0) {
-                git(&self.git_executable, &path, ["checkout", branch], &token)?;
+                git(
+                    &self.git_executable,
+                    &path,
+                    ["checkout", branch],
+                    credentials.token_variable,
+                    &token,
+                )?;
                 return Ok(StandaloneClone {
                     path,
                     branch: Some(branch.clone()),
@@ -149,7 +180,9 @@ impl CloneManager {
                     &source_branch,
                 ])
                 .current_dir(&path)
-                .env("GH_TOKEN", &token)
+                .env(credentials.token_variable, &token)
+                .env_remove(competing_token_variable(credentials.token_variable))
+                .env_remove(competing_legacy_token_variable(credentials.token_variable))
                 .status()
                 .context("failed to inspect implementation branch")?
                 .code();
@@ -159,12 +192,14 @@ impl CloneManager {
                     &self.git_executable,
                     &path,
                     ["fetch", "--no-tags", "origin", &branch_refspec],
+                    credentials.token_variable,
                     &token,
                 )?;
                 git(
                     &self.git_executable,
                     &path,
                     ["checkout", "-B", branch, &remote_branch],
+                    credentials.token_variable,
                     &token,
                 )?;
             } else if remote == Some(2) {
@@ -172,6 +207,7 @@ impl CloneManager {
                     &self.git_executable,
                     &path,
                     ["checkout", "-B", branch, base_sha],
+                    credentials.token_variable,
                     &token,
                 )?;
             } else {
@@ -182,6 +218,7 @@ impl CloneManager {
                 &self.git_executable,
                 &path,
                 ["checkout", "--detach", base_sha],
+                credentials.token_variable,
                 &token,
             )?;
         }
@@ -199,7 +236,7 @@ impl CloneManager {
         task_id: i64,
         base_branch: &str,
         base_sha: &str,
-        github_token_env: &str,
+        repository_token_env: &str,
     ) -> Result<StandaloneClone> {
         self.prepare(
             repository,
@@ -209,7 +246,7 @@ impl CloneManager {
             base_branch,
             base_sha,
             false,
-            github_token_env,
+            repository_token_env,
         )
     }
 
@@ -227,10 +264,23 @@ impl CloneManager {
         if !path.join(".git").is_dir() {
             bail!("{} is not a standalone Git clone", path.display());
         }
-        let dirty = !git_output(&self.git_executable, path, ["status", "--porcelain"], "")?
-            .trim()
-            .is_empty();
-        let branch = git_output(&self.git_executable, path, ["branch", "--show-current"], "")?;
+        let token_variable = self.forge.git_credentials().token_variable;
+        let dirty = !git_output(
+            &self.git_executable,
+            path,
+            ["status", "--porcelain"],
+            token_variable,
+            "",
+        )?
+        .trim()
+        .is_empty();
+        let branch = git_output(
+            &self.git_executable,
+            path,
+            ["branch", "--show-current"],
+            token_variable,
+            "",
+        )?;
         Ok(CleanupPreview {
             path: path.to_owned(),
             branch: (!branch.trim().is_empty()).then(|| branch.trim().to_owned()),
@@ -242,17 +292,26 @@ impl CloneManager {
         &self,
         path: &Path,
         branch: &str,
-        github_token_env: &str,
+        repository_token_env: &str,
     ) -> Result<bool> {
         self.ensure_managed_path(path)?;
-        let token = std::env::var(github_token_env)
-            .with_context(|| format!("GitHub token environment {github_token_env:?} is missing"))?;
-        let local = git_output(&self.git_executable, path, ["rev-parse", "HEAD"], &token)?;
+        let token = std::env::var(repository_token_env).with_context(|| {
+            format!("repository token environment {repository_token_env:?} is missing")
+        })?;
+        let credentials = self.forge.git_credentials();
+        let local = git_output(
+            &self.git_executable,
+            path,
+            ["rev-parse", "HEAD"],
+            credentials.token_variable,
+            &token,
+        )?;
         let remote_ref = format!("refs/heads/{branch}");
         let remote = git_output(
             &self.git_executable,
             path,
             ["ls-remote", "--heads", "origin", &remote_ref],
+            credentials.token_variable,
             &token,
         )?;
         Ok(remote.split_whitespace().next() == Some(local.trim()))
@@ -279,7 +338,7 @@ impl CloneManager {
         Ok(())
     }
 
-    fn require_standalone_clone(&self, path: &Path, repository: &str) -> Result<()> {
+    fn require_standalone_clone(&self, path: &Path, repository: &str, token: &str) -> Result<()> {
         if !path.join(".git").is_dir() {
             bail!(
                 "clone {} does not contain standalone Git metadata",
@@ -290,30 +349,31 @@ impl CloneManager {
             &self.git_executable,
             path,
             ["remote", "get-url", "origin"],
-            "",
+            self.forge.git_credentials().token_variable,
+            token,
         )?;
-        let expected_suffix = format!("/{repository}.git");
-        if !origin
-            .trim()
-            .trim_end_matches('/')
-            .ends_with(&expected_suffix)
-        {
-            bail!(
-                "clone origin {:?} does not match {repository}",
-                origin.trim()
-            );
+        let discovered = RepositoryRef::parse(origin.trim())
+            .context("clone origin is not a supported repository remote")?;
+        if discovered.provider != self.forge.provider() || discovered.identity() != repository {
+            bail!("clone origin does not match configured repository identity");
         }
         Ok(())
     }
 }
 
-fn validate_repository(repository: &str) -> Result<()> {
-    let mut parts = repository.split('/');
-    if !matches!(
-        (parts.next(), parts.next(), parts.next()),
-        (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty()
-    ) {
-        bail!("invalid GitHub repository identity {repository:?}");
+fn validate_repository(provider: RepositoryProvider, repository: &str) -> Result<()> {
+    let remote = match provider {
+        RepositoryProvider::GitHub => format!("https://github.com/{repository}.git"),
+        RepositoryProvider::GitLab => {
+            let project = repository
+                .strip_prefix("gitlab.com/")
+                .context("invalid GitLab repository identity")?;
+            format!("https://gitlab.com/{project}.git")
+        }
+    };
+    let parsed = RepositoryRef::parse(&remote).context("invalid repository identity")?;
+    if parsed.provider != provider || parsed.identity() != repository {
+        bail!("repository identity does not match selected provider");
     }
     Ok(())
 }
@@ -329,12 +389,16 @@ fn git<const N: usize>(
     executable: &Path,
     repository: &Path,
     arguments: [&str; N],
+    token_variable: &str,
     token: &str,
 ) -> Result<()> {
     let status = Command::new(executable)
         .args(arguments)
         .current_dir(repository)
-        .env("GH_TOKEN", token)
+        .env(token_variable, token)
+        .env_remove(competing_token_variable(token_variable))
+        .env_remove(competing_legacy_token_variable(token_variable))
+        .stderr(std::process::Stdio::null())
         .status()
         .context("failed to start Git")?;
     if !status.success() {
@@ -347,22 +411,37 @@ fn git_output<const N: usize>(
     executable: &Path,
     repository: &Path,
     arguments: [&str; N],
+    token_variable: &str,
     token: &str,
 ) -> Result<String> {
     let output = Command::new(executable)
         .args(arguments)
         .current_dir(repository)
-        .env("GH_TOKEN", token)
+        .env(token_variable, token)
+        .env_remove(competing_token_variable(token_variable))
+        .env_remove(competing_legacy_token_variable(token_variable))
         .output()
         .context("failed to start Git")?;
     if !output.status.success() {
-        bail!(
-            "Git command failed with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        bail!("Git command failed with {}", output.status);
     }
     String::from_utf8(output.stdout).context("Git output was not UTF-8")
+}
+
+fn competing_token_variable(token_variable: &str) -> &'static str {
+    if token_variable == "GH_TOKEN" {
+        "GITLAB_TOKEN"
+    } else {
+        "GH_TOKEN"
+    }
+}
+
+fn competing_legacy_token_variable(token_variable: &str) -> &'static str {
+    if token_variable == "GH_TOKEN" {
+        "GLAB_TOKEN"
+    } else {
+        "GITHUB_TOKEN"
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -430,8 +509,8 @@ esac
         unsafe { std::env::set_var(TOKEN_ENV, "clone-test-token") };
         let manager = CloneManager {
             root: root.clone(),
-            gh_executable: gh,
             git_executable: git,
+            forge: crate::forge::forge_for_with_executable(RepositoryProvider::GitHub, gh),
         };
 
         let triage = manager
@@ -527,8 +606,8 @@ esac
         unsafe { std::env::set_var(TOKEN_ENV, "clone-test-token") };
         let manager = CloneManager {
             root: root.clone(),
-            gh_executable: gh,
             git_executable: git,
+            forge: crate::forge::forge_for_with_executable(RepositoryProvider::GitHub, gh),
         };
 
         let first = manager
@@ -572,6 +651,81 @@ esac
     }
 
     #[test]
+    fn gitlab_subgroup_clone_uses_only_glab_credentials_and_preserves_full_identity() {
+        const GITLAB_TOKEN_ENV: &str = "FACTORY_CLONE_TEST_GITLAB_TOKEN";
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("clones");
+        fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let log = temp.path().join("commands.log");
+        let glab = temp.path().join("glab");
+        let git = temp.path().join("git");
+        executable(
+            &glab,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf 'glab|%s\n' "$*" >> '{}'
+test "$GITLAB_TOKEN" = 'gitlab-clone-token'
+test "${{GH_TOKEN-unset}}" = 'unset'
+test "$1 $2" = 'repo clone'
+test "$3" = 'https://gitlab.com/group/subgroup/widgets.git'
+mkdir -p "$4/.git"
+"#,
+                log.display()
+            ),
+        );
+        executable(
+            &git,
+            &format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s|%s\n' "$PWD" "$*" >> '{}'
+test "${{GITLAB_TOKEN-unset}}" = 'gitlab-clone-token'
+test "${{GH_TOKEN-unset}}" = 'unset'
+case "$1 ${{2:-}}" in
+  'remote get-url') printf '%s\n' 'https://gitlab.com/group/subgroup/widgets.git' ;;
+  'rev-parse --verify') printf '%s\n' '{}' ;;
+  'show-ref --verify') exit 1 ;;
+  'ls-remote --exit-code') exit 2 ;;
+  'checkout -B') printf '%s' "$3" > .fake-local-branch ;;
+esac
+"#,
+                log.display(),
+                BASE_SHA
+            ),
+        );
+        unsafe { std::env::set_var(GITLAB_TOKEN_ENV, "gitlab-clone-token") };
+        let manager = CloneManager {
+            root: root.clone(),
+            git_executable: git,
+            forge: crate::forge::forge_for_with_executable(RepositoryProvider::GitLab, glab),
+        };
+
+        let clone = manager
+            .prepare(
+                "gitlab.com/group/subgroup/widgets",
+                8,
+                42,
+                "Fix subgroup clone",
+                "main",
+                BASE_SHA,
+                true,
+                GITLAB_TOKEN_ENV,
+            )
+            .unwrap();
+
+        assert_eq!(clone.path, root.join("issue-42"));
+        let commands = fs::read_to_string(log).unwrap();
+        assert!(commands.contains("glab|repo clone https://gitlab.com/group/subgroup/widgets.git"));
+        assert!(commands.contains(
+            "config --add credential.https://gitlab.com.helper !glab auth git-credential"
+        ));
+        assert!(!commands.contains("gh|"));
+        assert!(!commands.contains("gitlab-clone-token"));
+    }
+
+    #[test]
     fn failed_initial_clone_does_not_poison_the_stable_destination() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("clones");
@@ -583,8 +737,8 @@ esac
         unsafe { std::env::set_var(TOKEN_ENV, "clone-test-token") };
         let manager = CloneManager {
             root: root.canonicalize().unwrap(),
-            gh_executable: gh,
             git_executable: git,
+            forge: crate::forge::forge_for_with_executable(RepositoryProvider::GitHub, gh),
         };
 
         assert!(

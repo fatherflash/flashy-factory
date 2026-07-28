@@ -397,13 +397,8 @@ async fn run_cli() -> Result<u8> {
             }
             validate_data_directory(&config.data_directory)?;
             if let Some(worker) = &config.worker {
-                if config.repository.provider == factory::repository::RepositoryProvider::GitLab {
-                    bail!(
-                        "GitLab Docker Sandbox credentials require provider-aware worker credentials"
-                    );
-                }
-                GitHubClient::default()
-                    .validate_token_env(&worker.github_token_env, &cancellation)
+                forge_for(config.repository.provider)
+                    .validate_worker_token_env(&worker.repository_token_env, &cancellation)
                     .await?;
                 SandboxWorker::new(worker.clone(), "validate")
                     .validate(&cancellation)
