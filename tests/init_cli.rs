@@ -119,6 +119,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
 
     let config = fs::read_to_string(fixture.config_path()).unwrap();
     assert!(config.contains("version = 1"));
+    assert!(config.contains("[repository]"));
+    assert!(config.contains("provider = \"github\""));
+    assert!(config.contains("identity = \"example/repository\""));
     assert!(config.contains("sandbox = \"worktree\""));
     assert!(config.contains("runtime = \"codex\""));
     assert!(config.contains("[source]"));

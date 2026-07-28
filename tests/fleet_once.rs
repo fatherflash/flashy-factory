@@ -371,7 +371,7 @@ fn rejects_a_github_identity_that_differs_from_the_pinned_identity() {
 }
 
 #[test]
-fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
+fn disabled_repository_with_changed_config_pin_does_not_read_or_write_durable_state() {
     let temp = tempfile::tempdir().unwrap();
     let data_home = temp.path().join("data");
     let enabled = make_repository(
@@ -461,24 +461,14 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
         ),
     )
     .unwrap();
-    fs::write(
-        disabled.join(".flashy-factory/config.toml"),
-        "this is no longer valid Flashy Factory configuration\n",
-    )
-    .unwrap();
-    assert!(
-        ProcessCommand::new("git")
-            .args([
-                "remote",
-                "set-url",
-                "origin",
-                "git@github.com:acme/renamed-disabled.git",
-            ])
-            .current_dir(&disabled)
-            .status()
-            .unwrap()
-            .success()
-    );
+    let disabled_config_path = disabled.join(".flashy-factory/config.toml");
+    let changed_config = fs::read_to_string(&disabled_config_path)
+        .unwrap()
+        .replace(
+            "poll_every = \"60s\"\n",
+            "poll_every = \"60s\"\n\n[repository]\nprovider = \"github\"\nidentity = \"acme/renamed-disabled\"\n",
+        );
+    fs::write(disabled_config_path, changed_config).unwrap();
     let fleet = temp.path().join("fleet.toml");
     fs::write(
         &fleet,
@@ -492,19 +482,22 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
     fleet_command(&fake_github(temp.path()), &data_home)
         .args(["run", "--fleet", fleet.to_str().unwrap(), "--once"])
         .assert()
-        .success()
+        .failure()
         .stdout(predicate::str::contains(
-            "repository=acme/disabled status=disabled",
+            "repository=acme/disabled status=invalid_config",
+        ))
+        .stdout(predicate::str::contains(
+            "configured repository github identity acme/renamed-disabled does not match origin github identity acme/disabled",
         ));
 
     let disabled_ledger = Ledger::open_in(&disabled_config.data_directory).unwrap();
     assert_eq!(
         disabled_ledger.task(task.id).unwrap().unwrap().state,
-        TaskState::Queued
+        TaskState::Running
     );
     assert_eq!(
         disabled_ledger.run(run.id).unwrap().unwrap().outcome,
-        "failed"
+        "running"
     );
     assert_eq!(
         disabled_ledger
@@ -512,7 +505,7 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
             .unwrap()
             .unwrap()
             .state,
-        TaskState::Cancelled
+        TaskState::Running
     );
     assert_eq!(
         disabled_ledger
@@ -520,7 +513,7 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
             .unwrap()
             .unwrap()
             .outcome,
-        "cancelled"
+        "running"
     );
     assert_eq!(
         disabled_ledger

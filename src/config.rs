@@ -24,6 +24,7 @@ pub const LEGACY_DATA_HOME_ENV: &str = "FACTORY_DATA_HOME";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub repositories: Vec<PathBuf>,
+    pub repository: RepositoryConfig,
     pub poll_every: Duration,
     pub default_runtime: String,
     pub default_timeout: Duration,
@@ -36,6 +37,12 @@ pub struct Config {
     pub worker: Option<WorkerConfig>,
     pub triggers: Vec<TriggerConfig>,
     pub source: Option<SourceConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryConfig {
+    pub provider: RepositoryProvider,
+    pub identity: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,10 +119,18 @@ pub struct GitHubConfig {
 struct RawConfig {
     version: u8,
     poll_every: String,
+    repository: Option<RawRepositoryConfig>,
     worker: RawWorkerConfig,
     source: RawSourceConfig,
     #[serde(rename = "trigger")]
     triggers: BTreeMap<String, RawTriggerConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRepositoryConfig {
+    provider: RepositoryProvider,
+    identity: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,12 +308,19 @@ impl Config {
         }
 
         let repository = canonical_directory("repository", repository, repository)?;
+        ensure_primary_checkout(&repository)?;
+        let repository_config = resolve_repository_config(raw.repository, &repository)?;
         let triggers =
             resolve_triggers(raw.triggers, &repository, default_timeout, maximum_timeout)?;
-        let data_directory = match data_home {
-            Some(data_home) => repository_data_directory_with_base(&repository, Some(data_home))?,
-            None => repository_data_directory(&repository)?,
+        let data_home = match data_home {
+            Some(data_home) => Some(data_home),
+            None => configured_data_home()?,
         };
+        let data_directory = repository_data_directory_for_resolved_identity(
+            &repository,
+            &repository_config.identity,
+            data_home,
+        )?;
         let worker = match execution_mode {
             ExecutionMode::Worktree => {
                 reject_sandbox_options(&raw.worker)?;
@@ -322,6 +344,7 @@ impl Config {
 
         Ok(Self {
             repositories: vec![repository],
+            repository: repository_config,
             poll_every,
             default_runtime,
             default_timeout,
@@ -342,6 +365,16 @@ impl fmt::Display for Config {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(formatter, "Configuration is valid.")?;
         writeln!(formatter, "repository: {}", self.repositories[0].display())?;
+        writeln!(
+            formatter,
+            "repository.provider: {}",
+            self.repository.provider
+        )?;
+        writeln!(
+            formatter,
+            "repository.identity: {}",
+            self.repository.identity
+        )?;
         writeln!(
             formatter,
             "poll_every: {}",
@@ -394,6 +427,89 @@ impl fmt::Display for Config {
         )?;
         writeln!(formatter, "worktrees: {}", self.workspace_root.display())
     }
+}
+
+fn resolve_repository_config(
+    configured: Option<RawRepositoryConfig>,
+    repository: &Path,
+) -> Result<RepositoryConfig> {
+    let actual = repository_remote_ref(repository)?;
+    let actual_identity = actual.identity();
+    let actual_identity_for_error =
+        safe_repository_identity_for_error(actual.provider, &actual_identity);
+    let resolved = match configured {
+        Some(configured) => {
+            let expected_identity =
+                validate_configured_repository_identity(configured.provider, &configured.identity)?;
+            if configured.provider != actual.provider || expected_identity != actual_identity {
+                bail!(
+                    "configured repository {} identity {} does not match origin {} identity {}",
+                    configured.provider,
+                    expected_identity,
+                    actual.provider,
+                    actual_identity_for_error
+                );
+            }
+            RepositoryConfig {
+                provider: configured.provider,
+                identity: expected_identity.to_owned(),
+            }
+        }
+        None => {
+            if actual.provider != RepositoryProvider::GitHub {
+                bail!(
+                    "configuration without [repository] means GitHub, but origin is {} identity {}; add an explicit [repository] table",
+                    actual.provider,
+                    actual_identity_for_error
+                );
+            }
+            RepositoryConfig {
+                provider: RepositoryProvider::GitHub,
+                identity: actual_identity,
+            }
+        }
+    };
+    if resolved.provider != RepositoryProvider::GitHub {
+        bail!(
+            "repository provider {} is not supported by this build",
+            resolved.provider
+        );
+    }
+    Ok(resolved)
+}
+
+fn safe_repository_identity_for_error(provider: RepositoryProvider, identity: &str) -> &str {
+    validate_configured_repository_identity(provider, identity).unwrap_or("<invalid>")
+}
+
+fn validate_configured_repository_identity(
+    provider: RepositoryProvider,
+    identity: &str,
+) -> Result<&str> {
+    let segments = identity.split('/').collect::<Vec<_>>();
+    let valid_segments = segments.iter().all(|segment| {
+        !segment.is_empty()
+            && segment.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+            })
+    });
+    let valid_shape = match provider {
+        RepositoryProvider::GitHub => segments.len() == 2,
+        RepositoryProvider::GitLab => {
+            segments.len() >= 3 && segments[0].eq_ignore_ascii_case("gitlab.com")
+        }
+    };
+    if identity.is_empty()
+        || identity != identity.to_ascii_lowercase()
+        || !valid_segments
+        || !valid_shape
+    {
+        bail!(
+            "repository.identity must be a canonical {} identity",
+            provider
+        );
+    }
+    Ok(identity)
 }
 
 impl fmt::Display for TriggerKind {
@@ -831,16 +947,6 @@ fn repository_data_directory_with_base(
     repository_data_directory_for_resolved_identity(&repository, &identity, configured_base)
 }
 
-pub(crate) fn repository_data_directory_for_identity(
-    repository: &Path,
-    identity: &str,
-) -> Result<PathBuf> {
-    if identity.trim().is_empty() {
-        bail!("repository identity must not be empty");
-    }
-    repository_data_directory_for_resolved_identity(repository, identity, configured_data_home()?)
-}
-
 fn repository_data_directory_for_resolved_identity(
     repository: &Path,
     identity: &str,
@@ -903,14 +1009,13 @@ fn resolve_data_base(base: PathBuf) -> Result<PathBuf> {
 }
 
 pub fn repository_remote_identity(repository: &Path) -> Result<String> {
+    Ok(repository_remote_ref(repository)?.identity())
+}
+
+pub fn repository_remote_ref(repository: &Path) -> Result<RepositoryRef> {
     let origin = git_output(repository, &["config", "--get", "remote.origin.url"])
         .context("repository has no configured origin remote")?;
-    let repository_ref =
-        RepositoryRef::parse(origin.trim()).context("origin is not a supported GitHub remote")?;
-    if repository_ref.provider != RepositoryProvider::GitHub {
-        bail!("origin is not a supported GitHub remote");
-    }
-    Ok(repository_ref.identity())
+    RepositoryRef::parse(origin.trim()).context("origin is not a supported repository remote")
 }
 
 pub(crate) fn ensure_primary_checkout(repository: &Path) -> Result<()> {

@@ -5,7 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 use std::time::Duration;
 
-use factory::config::{Config, ExecutionMode, SourceConfig, TriggerConfig, TriggerKind};
+use factory::config::{
+    Config, ExecutionMode, RepositoryConfig, SourceConfig, TriggerConfig, TriggerKind,
+};
+use factory::repository::RepositoryProvider;
 use factory::source::{SourceClient, SourceTicketContext};
 use factory::storage::{Ledger, RunOutcome};
 use factory::workflow::WorkflowCatalog;
@@ -53,6 +56,10 @@ fn fixture() -> (
     fs::create_dir(&workspace_root).unwrap();
     let config = Config {
         repositories: vec![repository],
+        repository: RepositoryConfig {
+            provider: RepositoryProvider::GitHub,
+            identity: "example/repository".to_owned(),
+        },
         poll_every: Duration::from_millis(10),
         default_runtime: "codex".into(),
         default_timeout: Duration::from_secs(60),

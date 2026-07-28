@@ -12,8 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     CONFIG_DIRECTORY, Config, LEGACY_CONFIG_DIRECTORY, canonical_directory_or_missing,
-    configured_data_home, ensure_primary_checkout, expand_path,
-    repository_data_directory_for_identity, repository_remote_identity,
+    configured_data_home, ensure_primary_checkout, expand_path, repository_remote_identity,
     resolve_repository_config_path,
 };
 use crate::storage::DATABASE_NAME;
@@ -449,11 +448,25 @@ fn resolve_repository_path(path: &Path, base: &Path) -> Result<PathBuf> {
 
 impl FleetRepository {
     pub fn pinned_ledger_path(&self) -> Result<PathBuf> {
-        Ok(repository_data_directory_for_identity(&self.path, &self.identity)?.join(DATABASE_NAME))
+        self.validate_checkout()?;
+        let config_path = resolve_repository_config_path(&self.path)?;
+        let config = Config::load_for_inspection(&config_path)?;
+        if config.repository.identity != self.identity {
+            bail!(
+                "repository configuration identity {} does not match fleet identity {}",
+                config.repository.identity,
+                self.identity
+            );
+        }
+        Ok(config.data_directory.join(DATABASE_NAME))
+    }
+
+    pub fn validate_checkout(&self) -> Result<()> {
+        validate_checkout(&self.path, &self.identity)
     }
 
     pub fn load_runtime(&self) -> Result<RepositoryRuntime> {
-        validate_checkout(&self.path, &self.identity)?;
+        self.validate_checkout()?;
         let config_path = resolve_repository_config_path(&self.path)?;
         let mut config = if self.enabled {
             Config::load(&config_path)?
@@ -509,15 +522,16 @@ impl FleetRepository {
 
 fn validate_identity(index: usize, value: &str) -> Result<String> {
     let value = value.trim();
-    let mut parts = value.split('/');
-    let owner = parts.next().unwrap_or_default();
-    let repository = parts.next().unwrap_or_default();
-    if parts.next().is_some()
-        || !valid_identity_segment(owner)
-        || !valid_identity_segment(repository)
-    {
+    let parts = value.split('/').collect::<Vec<_>>();
+    let valid_github = parts.len() == 2
+        && !parts[0].eq_ignore_ascii_case("gitlab.com")
+        && parts.iter().all(|part| valid_identity_segment(part));
+    let valid_gitlab = parts.len() >= 3
+        && parts[0].eq_ignore_ascii_case("gitlab.com")
+        && parts[1..].iter().all(|part| valid_identity_segment(part));
+    if !valid_github && !valid_gitlab {
         bail!(
-            "repository entry {} name must have the GitHub owner/name shape",
+            "repository entry {} name must be a GitHub owner/name or GitLab gitlab.com/namespace/name identity",
             index + 1
         );
     }
@@ -715,6 +729,16 @@ mod tests {
         validate_checkout(&path, "acme/repo").unwrap();
         let error = validate_checkout(&path, "acme/changed").unwrap_err();
         assert!(error.to_string().contains("does not match pinned"));
+    }
+
+    #[test]
+    fn accepts_host_qualified_gitlab_subgroup_identities() {
+        assert_eq!(
+            validate_identity(0, "gitlab.com/DuskLabs/Carini/Polaris").unwrap(),
+            "gitlab.com/DuskLabs/Carini/Polaris"
+        );
+        assert!(validate_identity(0, "gitlab.example.com/group/repository").is_err());
+        assert!(validate_identity(0, "gitlab.com/group").is_err());
     }
 
     #[test]

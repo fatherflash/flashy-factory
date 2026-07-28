@@ -1,6 +1,7 @@
 use std::fmt;
 
 use anyhow::{Result, bail};
+use serde::Deserialize;
 
 const SUPPORTED_REMOTE_HELP: &str = "supported repository remotes are \
 git@github.com:owner/repository.git, https://github.com/owner/repository.git, \
@@ -8,9 +9,11 @@ ssh://git@github.com/owner/repository.git, \
 git@gitlab.com:group/repository.git, https://gitlab.com/group/repository.git, or \
 ssh://git@gitlab.com/group/repository.git";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum RepositoryProvider {
+    #[serde(rename = "github")]
     GitHub,
+    #[serde(rename = "gitlab")]
     GitLab,
 }
 

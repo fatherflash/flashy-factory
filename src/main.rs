@@ -793,8 +793,16 @@ fn required_fleet_repository<'a>(
         .context("repository selector did not resolve")
 }
 
-fn existing_fleet_ledger(repository: &FleetRepository) -> Result<Option<Ledger>> {
-    let ledger_path = repository.pinned_ledger_path()?;
+fn existing_fleet_ledger(path: &Path, repository: &FleetRepository) -> Result<Option<Ledger>> {
+    let ledger_path = match active_repository_operation(path, &repository.identity)? {
+        Some(snapshot) => {
+            let Some(ledger_path) = snapshot.ledger_path else {
+                return Ok(None);
+            };
+            ledger_path
+        }
+        None => repository.pinned_ledger_path()?,
+    };
     if !ledger_path.exists() {
         return Ok(None);
     }
@@ -805,7 +813,7 @@ fn collect_fleet_tasks(path: &Path, selector: Option<&str>) -> Result<Vec<Task>>
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut tasks = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        if let Some(ledger) = existing_fleet_ledger(repository)? {
+        if let Some(ledger) = existing_fleet_ledger(path, repository)? {
             tasks.extend(ledger.tasks()?);
         }
     }
@@ -820,7 +828,7 @@ fn collect_fleet_runs(
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut runs = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        if let Some(ledger) = existing_fleet_ledger(repository)? {
+        if let Some(ledger) = existing_fleet_ledger(path, repository)? {
             runs.extend(ledger.runs(workflow)?);
         }
     }
@@ -835,7 +843,7 @@ fn fleet_run_context(
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut matches = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        let Some(ledger) = existing_fleet_ledger(repository)? else {
+        let Some(ledger) = existing_fleet_ledger(path, repository)? else {
             continue;
         };
         let Some(run) = ledger.run(run_id)? else {
@@ -874,7 +882,7 @@ fn fleet_run_context(
 fn fleet_mutation_ledger(path: &Path, selector: &str, run_id: i64) -> Result<Ledger> {
     let fleet = FleetConfig::load_for_operation(path)?;
     let repository = required_fleet_repository(&fleet, selector)?;
-    let ledger = existing_fleet_ledger(repository)?
+    let ledger = existing_fleet_ledger(path, repository)?
         .with_context(|| format!("repository {} has no durable state", repository.identity))?;
     let run = ledger.run(run_id)?.with_context(|| {
         format!(
@@ -1136,7 +1144,7 @@ fn collect_fleet_poll_statuses(path: &Path, selector: Option<&str>) -> Result<Ve
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut statuses = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        if let Some(ledger) = existing_fleet_ledger(repository)? {
+        if let Some(ledger) = existing_fleet_ledger(path, repository)? {
             statuses.extend(ledger.poll_statuses()?);
         }
     }
@@ -1154,7 +1162,7 @@ fn collect_fleet_workspaces(
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut workspaces = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        let Some(ledger) = existing_fleet_ledger(repository)? else {
+        let Some(ledger) = existing_fleet_ledger(path, repository)? else {
             continue;
         };
         if all {
@@ -1181,7 +1189,7 @@ fn collect_fleet_recovery(path: &Path, selector: Option<&str>) -> Result<Vec<Rec
     let fleet = FleetConfig::load_for_operation(path)?;
     let mut recovery = Vec::new();
     for repository in selected_fleet_repositories(&fleet, selector)? {
-        let Some(ledger) = existing_fleet_ledger(repository)? else {
+        let Some(ledger) = existing_fleet_ledger(path, repository)? else {
             continue;
         };
         let tasks = ledger.tasks()?;
@@ -1438,12 +1446,23 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
     let mut healthy = 0usize;
     for repository in &fleet.repositories {
         if !repository.enabled {
+            if let Err(error) = repository.validate_checkout() {
+                failures += 1;
+                write_stdout_best_effort(
+                    format!(
+                        "repository={} status=invalid_config error={}\n",
+                        repository.identity,
+                        single_line_error(&error)
+                    )
+                    .as_bytes(),
+                );
+                continue;
+            }
             match repository.pinned_ledger_path() {
                 Ok(ledger_path) if ledger_path.exists() => {
-                    if let Err(error) = FactoryDaemon::reconcile_disabled_ledger(
-                        &repository.identity,
-                        &ledger_path,
-                    ) {
+                    if let Err(error) =
+                        FactoryDaemon::reconcile_disabled_ledger(&repository.identity, &ledger_path)
+                    {
                         write_stderr_best_effort(
                             format!(
                                 "Flashy Factory disabled repository reconciliation failed for {}: {}\n",
@@ -1464,14 +1483,18 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                     }
                 }
                 Ok(_) => {}
-                Err(error) => write_stderr_best_effort(
-                    format!(
-                        "Flashy Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
-                        repository.identity,
-                        single_line_error(&error)
-                    )
-                    .as_bytes(),
-                ),
+                Err(error) => {
+                    failures += 1;
+                    write_stdout_best_effort(
+                        format!(
+                            "repository={} status=invalid_config error={}\n",
+                            repository.identity,
+                            single_line_error(&error)
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
             }
             write_stdout_best_effort(
                 format!("repository={} status=disabled\n", repository.identity).as_bytes(),
@@ -1665,47 +1688,63 @@ async fn run_fleet(path: &Path) -> Result<u8> {
     let mut invalid = 0usize;
     for repository in &fleet.repositories {
         if !repository.enabled {
-            match repository.load_runtime() {
-                Ok(runtime) => {
-                    operation_snapshots.push(RepositoryOperationSnapshot::from_runtime(&runtime))
-                }
-                Err(error) => operation_snapshots
-                    .push(RepositoryOperationSnapshot::from_error(repository, &error)),
-            }
-            match repository.pinned_ledger_path() {
-                Ok(ledger_path) if ledger_path.exists() => {
-                    if let Err(error) = FactoryDaemon::reconcile_disabled_ledger(
-                        &repository.identity,
-                        &ledger_path,
-                    ) {
-                        write_stderr_best_effort(
-                            format!(
-                                "Flashy Factory disabled repository reconciliation failed for {}: {}\n",
-                                repository.identity,
-                                single_line_error(&error)
-                            )
-                            .as_bytes(),
-                        );
-                    }
-                    if let Ok(ledger) = Ledger::open(&ledger_path) {
-                        let _ = ledger.record_repository_health(
-                            &repository.identity,
-                            "disabled",
-                            None,
-                            0,
-                            None,
-                        );
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => write_stderr_best_effort(
+            if let Err(error) = repository.validate_checkout() {
+                operation_snapshots
+                    .push(RepositoryOperationSnapshot::from_error(repository, &error));
+                invalid += 1;
+                write_stdout_best_effort(
                     format!(
-                        "Flashy Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
+                        "repository={} status=invalid_config error={}\n",
                         repository.identity,
                         single_line_error(&error)
                     )
                     .as_bytes(),
-                ),
+                );
+                continue;
+            }
+            let runtime = match repository.load_runtime() {
+                Ok(runtime) => {
+                    operation_snapshots.push(RepositoryOperationSnapshot::from_runtime(&runtime));
+                    runtime
+                }
+                Err(error) => {
+                    operation_snapshots
+                        .push(RepositoryOperationSnapshot::from_error(repository, &error));
+                    invalid += 1;
+                    write_stdout_best_effort(
+                        format!(
+                            "repository={} status=invalid_config error={}\n",
+                            repository.identity,
+                            single_line_error(&error)
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
+            };
+            if runtime.ledger_path.exists() {
+                let ledger_path = runtime.ledger_path;
+                if let Err(error) =
+                    FactoryDaemon::reconcile_disabled_ledger(&repository.identity, &ledger_path)
+                {
+                    write_stderr_best_effort(
+                        format!(
+                            "Flashy Factory disabled repository reconciliation failed for {}: {}\n",
+                            repository.identity,
+                            single_line_error(&error)
+                        )
+                        .as_bytes(),
+                    );
+                }
+                if let Ok(ledger) = Ledger::open(&ledger_path) {
+                    let _ = ledger.record_repository_health(
+                        &repository.identity,
+                        "disabled",
+                        None,
+                        0,
+                        None,
+                    );
+                }
             }
             write_stdout_best_effort(
                 format!("repository={} status=disabled\n", repository.identity).as_bytes(),

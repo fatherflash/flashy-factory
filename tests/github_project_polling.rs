@@ -7,8 +7,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use factory::config::{Config, ExecutionMode, SourceConfig, TriggerConfig, TriggerKind};
+use factory::config::{
+    Config, ExecutionMode, RepositoryConfig, SourceConfig, TriggerConfig, TriggerKind,
+};
 use factory::github::{GitHubClient, ProjectTicketContext};
+use factory::repository::RepositoryProvider;
 use factory::storage::{Ledger, RunOutcome};
 use factory::workflow::WorkflowCatalog;
 use tokio_util::sync::CancellationToken;
@@ -61,6 +64,10 @@ impl Fixture {
         };
         let config = Config {
             repositories: vec![repository.canonicalize().unwrap()],
+            repository: RepositoryConfig {
+                provider: RepositoryProvider::GitHub,
+                identity: "example/repo".to_owned(),
+            },
             poll_every: Duration::from_millis(20),
             default_runtime: "codex".to_owned(),
             default_timeout: Duration::from_secs(120),
