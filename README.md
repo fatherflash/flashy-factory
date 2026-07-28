@@ -9,7 +9,8 @@ human orchestrate every step from a terminal.
 It watches a trusted Asana task queue. When a configured condition matches,
 Flashy Factory creates a durable local task, prepares an isolated workspace,
 and gives one Markdown workflow to an agent. The agent uses the repository's
-Asana client plus normal tools such as `gh` and `git`. When nothing matches,
+Asana client plus Git, and the configured repository host CLI: `gh` for
+GitHub or `glab` for GitLab.com. When nothing matches,
 Flashy Factory does nothing and spends no model tokens.
 
 ![Human intent enters a trusted ticket queue; Flashy Factory runs isolated work and produces evidence; human review gates the team's merge; shipped changes return signals to the queue](docs/assets/readme/factory-loop.svg)
@@ -65,9 +66,9 @@ The boundary is intentional:
   concurrency, timeouts, sandbox lifecycle, supervision, cancellation, history,
   and recovery.
 - The workflow and agent own adaptive engineering work: reading the issue,
-  inspecting code, clarifying requirements, implementing changes, using `gh`
-  and `git`, opening a pull request, responding to CI and review, and updating
-  the ticket.
+  inspecting code, clarifying requirements, implementing changes, using Git and
+  the configured repository host CLI, opening a change request, responding to
+  CI and review, and updating the ticket.
 
 Flashy Factory does not encode a fixed SDLC, a workflow graph, or deterministic
 tracker effects. A trigger means only: **when this condition is true, run this
@@ -78,11 +79,11 @@ prompt**.
 Flashy Factory revalidates live source state immediately before execution, but
 does not filter tasks by author. The trust boundary is whoever can move a task
 into a configured Asana section or apply a required tag. Do not allow untrusted
-people to satisfy those conditions. Task notes, comments, linked pull requests,
+people to satisfy those conditions. Task notes, comments, linked change requests,
 and attachments remain untrusted input regardless. Use narrow credentials and
 protected branches that the worker cannot bypass.
 
-Flashy Factory-created software pull requests remain for human review. Flashy
+Flashy Factory-created software change requests remain for human review. Flashy
 Factory and its default workflows never merge them or enable automatic merge.
 The human who merges remains accountable for what ships.
 
@@ -101,13 +102,19 @@ Install these tools on a Unix-like host:
 - Python 3
 - a current stable Rust toolchain
 - Git
-- the GitHub CLI
+- the GitHub CLI for GitHub repositories or GitHub-backed ticket sources
+- the GitLab CLI for GitLab.com repositories
 - the Codex CLI
 
-Authenticate the tools that workers will use:
+Authenticate the tools that workers will use. Use the command for the hosting
+provider of the managed repository; a GitLab repository may still use `gh`
+independently if its ticket source is GitHub-backed:
 
 ```sh
+# For a GitHub-managed repository or GitHub-backed ticket source:
 gh auth login
+# For a GitLab.com-managed repository:
+glab auth login --hostname gitlab.com
 codex login
 ```
 
@@ -139,7 +146,9 @@ factory init
 ```
 
 Initialization creates the repository-owned configuration, Asana client and
-source adapter, and starter workflows:
+source adapter, and starter workflows. It detects GitHub and GitLab.com
+origins and records the provider and canonical identity in the generated
+configuration:
 
 ```text
 .flashy-factory/
@@ -166,6 +175,23 @@ Ready To Implement → Implementing → Reviewing → Done
 
 Section names are not built in. If your project uses different names, update
 the configuration and workflows together.
+
+### Repository hosting
+
+The managed repository's host determines cloning, branch inspection, pushing,
+worker credentials, and change-request recognition. GitHub repositories retain
+their existing `owner/repository` identity. GitLab.com repositories use a
+host-qualified identity that preserves every subgroup:
+
+```toml
+[repository]
+provider = "gitlab"
+identity = "gitlab.com/group/subgroup/repository"
+```
+
+Self-managed GitLab hosts are not inferred in this release. `factory init
+--check` is read-only and reports the required provider CLI before any files or
+durable state are created.
 
 ### Connect Asana
 
@@ -242,6 +268,7 @@ recovery, and cleanup.
 This fork intentionally supports:
 
 - one repository or an explicit fleet of repository-owned configurations;
+- GitHub and GitLab.com repository hosting, including GitLab subgroups;
 - status, label, and schedule triggers;
 - Codex workers in managed worktrees or Docker clones;
 - explicit Markdown workflows;
