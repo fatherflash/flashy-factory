@@ -18,6 +18,7 @@ use factory::fleet::{
     FleetConfig, FleetRepository, RepositoryOperationSnapshot, activate_fleet,
     active_repository_operation,
 };
+use factory::forge::forge_for;
 use factory::github::GitHubClient;
 use factory::init::{InitOptions, initialize};
 use factory::inspection::{
@@ -342,14 +343,20 @@ async fn run_cli() -> Result<u8> {
             let config = Config::load(&path)?;
             let catalog = WorkflowCatalog::load(&config)?;
             catalog.validate_all()?;
-            validate_data_directory(&config.data_directory)?;
             let cancellation = CancellationToken::new();
+            forge_for(config.repository.provider)
+                .validate(
+                    &config.repositories[0],
+                    &config.repository.identity,
+                    &cancellation,
+                )
+                .await?;
             if let Some(source) = &config.source {
-                let github = GitHubClient::default();
-                github.validate_global(&cancellation).await?;
                 let source_client = SourceClient;
                 for repository in &config.repositories {
                     if source.command.is_empty() {
+                        let github = GitHubClient::default();
+                        github.validate_global(&cancellation).await?;
                         let statuses = catalog
                             .entries
                             .iter()
@@ -388,7 +395,13 @@ async fn run_cli() -> Result<u8> {
                     }
                 }
             }
+            validate_data_directory(&config.data_directory)?;
             if let Some(worker) = &config.worker {
+                if config.repository.provider == factory::repository::RepositoryProvider::GitLab {
+                    bail!(
+                        "GitLab Docker Sandbox credentials require provider-aware worker credentials"
+                    );
+                }
                 GitHubClient::default()
                     .validate_token_env(&worker.github_token_env, &cancellation)
                     .await?;
@@ -1395,12 +1408,12 @@ async fn run_poller(
         )
         .as_bytes(),
     );
-    let ledger = Ledger::open_in(&data_directory)?;
+    let ledger_path = data_directory.join(DATABASE_NAME);
     if once {
         write_stderr_best_effort(
             b"Flashy Factory evaluating schedules and polling the source once...\n",
         );
-        let daemon = FactoryDaemon::new(config, catalog, ledger.path());
+        let daemon = FactoryDaemon::new(config, catalog, &ledger_path);
         let report = daemon.evaluate_once(CancellationToken::new()).await?;
         write_stdout_best_effort(
             format!(
@@ -1420,7 +1433,7 @@ async fn run_poller(
             signal_token.cancel();
         }
     });
-    let daemon = FactoryDaemon::new(config, catalog, ledger.path());
+    let daemon = FactoryDaemon::new(config, catalog, &ledger_path);
     daemon.run(cancellation).await?;
     signal_task.abort();
     write_stderr_best_effort(b"Flashy Factory stopped.\n");
@@ -1438,10 +1451,6 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
     let fleet = FleetConfig::load(path)?;
     ensure_no_unscoped_ledger_overlap()?;
     let cancellation = CancellationToken::new();
-    GitHubClient::default()
-        .validate_global(&cancellation)
-        .await?;
-
     let mut failures = 0usize;
     let mut healthy = 0usize;
     for repository in &fleet.repositories {
@@ -1516,33 +1525,16 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                 continue;
             }
         };
-        let ledger = match Ledger::open(&runtime.ledger_path) {
-            Ok(ledger) => ledger,
-            Err(error) => {
-                failures += 1;
-                write_stdout_best_effort(
-                    format!(
-                        "repository={} status=unavailable error={}\n",
-                        repository.identity,
-                        single_line_error(&error)
-                    )
-                    .as_bytes(),
-                );
-                continue;
-            }
-        };
         let daemon = FactoryDaemon::new_pinned_for_repository(
             runtime.identity,
             runtime.path,
             runtime.config,
             runtime.catalog,
-            ledger.path(),
+            &runtime.ledger_path,
         )?;
-        match daemon
-            .evaluate_once_after_global_validation(cancellation.clone())
-            .await
-        {
+        match daemon.evaluate_once(cancellation.clone()).await {
             Ok(report) => {
+                let ledger = Ledger::open(&runtime.ledger_path)?;
                 let source_failures = report.source.failures();
                 let issues_seen = report
                     .source
@@ -1621,40 +1613,44 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
             Err(error) => {
                 failures += 1;
                 let message = single_line_error(&error);
-                for (snapshot, result) in [
-                    (
-                        "poll",
-                        ledger.record_poll_status(
-                            &repository.identity,
-                            "all",
-                            "failed",
-                            0,
-                            0,
-                            Some(&message),
+                if runtime.ledger_path.exists()
+                    && let Ok(ledger) = Ledger::open(&runtime.ledger_path)
+                {
+                    for (snapshot, result) in [
+                        (
+                            "poll",
+                            ledger.record_poll_status(
+                                &repository.identity,
+                                "all",
+                                "failed",
+                                0,
+                                0,
+                                Some(&message),
+                            ),
                         ),
-                    ),
-                    (
-                        "health",
-                        ledger.record_repository_health(
-                            &repository.identity,
-                            "unavailable",
-                            Some(&message),
-                            1,
-                            None,
+                        (
+                            "health",
+                            ledger.record_repository_health(
+                                &repository.identity,
+                                "unavailable",
+                                Some(&message),
+                                1,
+                                None,
+                            ),
                         ),
-                    ),
-                ] {
-                    if let Err(snapshot_error) = result {
-                        failures += 1;
-                        write_stderr_best_effort(
-                            format!(
-                                "Flashy Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
-                                repository.identity,
-                                snapshot,
-                                single_line_error(&snapshot_error)
-                            )
-                            .as_bytes(),
-                        );
+                    ] {
+                        if let Err(snapshot_error) = result {
+                            failures += 1;
+                            write_stderr_best_effort(
+                                    format!(
+                                        "Flashy Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
+                                        repository.identity,
+                                        snapshot,
+                                        single_line_error(&snapshot_error)
+                                    )
+                                    .as_bytes(),
+                                );
+                        }
                     }
                 }
                 write_stdout_best_effort(

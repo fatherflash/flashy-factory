@@ -6,6 +6,7 @@ use std::process::Command as ProcessCommand;
 use assert_cmd::Command;
 use factory::config::Config;
 use predicates::prelude::*;
+use sha2::{Digest, Sha256};
 
 fn pin_repository(path: &std::path::Path, provider: &str, identity: &str) {
     let contents = fs::read_to_string(path).unwrap();
@@ -16,6 +17,29 @@ fn pin_repository(path: &std::path::Path, provider: &str, identity: &str) {
         ),
     );
     fs::write(path, contents).unwrap();
+}
+
+fn create_workspace_for_identity(
+    repository: &std::path::Path,
+    data_home: &std::path::Path,
+    identity: &str,
+) {
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        repository
+            .canonicalize()
+            .unwrap()
+            .as_os_str()
+            .as_encoded_bytes(),
+    );
+    let digest = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    fs::create_dir_all(data_home.join(&digest[..20]).join("worktrees")).unwrap();
 }
 
 fn valid_config() -> (
@@ -119,6 +143,40 @@ fn command_with_healthy_codex(temp: &tempfile::TempDir) -> Command {
 }
 
 #[cfg(unix)]
+fn command_with_gitlab_forge(temp: &tempfile::TempDir, log: &std::path::Path) -> Command {
+    let bin = temp.path().join("gitlab-bin");
+    fs::create_dir_all(&bin).unwrap();
+    for (name, contents) in [
+        (
+            "codex",
+            "#!/bin/sh\nprintf 'codex %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"--version\" ]; then echo 'codex 1.0.0'; exit 0; fi\nif [ \"$1 $2\" = \"login status\" ]; then echo 'Logged in using ChatGPT'; exit 0; fi\nexit 64\n",
+        ),
+        (
+            "glab",
+            "#!/bin/sh\nprintf 'glab %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"--version\" ]; then echo 'glab 1.80.0'; exit 0; fi\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"repo view\" ]; then echo 'example/subgroup/repository'; exit 0; fi\nexit 64\n",
+        ),
+        (
+            "gh",
+            "#!/bin/sh\nprintf 'gh %s\\n' \"$*\" >> \"$FACTORY_TEST_LOG\"\nif [ \"$1\" = \"--version\" ]; then echo 'gh version 2.80.0'; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then exit 0; fi\nif [ \"$1\" = \"repo\" ]; then exit 99; fi\nif [ \"$1 $2\" = \"api user\" ]; then echo '{\"id\":2,\"login\":\"factory-bot\"}'; exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"users/example\" ]; then echo '{\"id\":1,\"login\":\"example\",\"node_id\":\"U_1\"}'; exit 0; fi\nexit 64\n",
+        ),
+    ] {
+        let executable = bin.join(name);
+        fs::write(&executable, contents).unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(executable, permissions).unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::cargo_bin("factory").unwrap();
+    command.env("PATH", path).env("FACTORY_TEST_LOG", log);
+    command
+}
+
+#[cfg(unix)]
 #[test]
 fn validates_explicit_config() {
     let (temp, path, _repository, data_home) = valid_config();
@@ -130,6 +188,154 @@ fn validates_explicit_config() {
         .success()
         .stdout(predicate::str::contains("Configuration is valid."))
         .stdout(predicate::str::contains("worker.runtime: codex"));
+}
+
+#[cfg(unix)]
+#[test]
+fn validates_gitlab_repository_with_glab_and_keeps_github_source_separate() {
+    let (temp, path, repository, data_home) = valid_config();
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "git@gitlab.com:example/subgroup/repository.git",
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
+    create_workspace_for_identity(
+        &repository,
+        &data_home,
+        "gitlab.com/example/subgroup/repository",
+    );
+    let log = temp.path().join("commands.log");
+
+    command_with_gitlab_forge(&temp, &log)
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", data_home)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "repository.identity: gitlab.com/example/subgroup/repository",
+        ));
+
+    let commands = fs::read_to_string(log).unwrap();
+    assert!(commands.contains("glab auth status --hostname gitlab.com"));
+    assert!(commands.contains("glab repo view --output json --jq .path_with_namespace"));
+    assert!(commands.contains("gh api"));
+    assert!(!commands.contains("gh repo"));
+}
+
+#[cfg(unix)]
+#[test]
+fn gitlab_run_stops_after_forge_validation_without_creating_a_ledger() {
+    let (temp, path, repository, data_home) = valid_config();
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "git@gitlab.com:example/subgroup/repository.git",
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
+    create_workspace_for_identity(
+        &repository,
+        &data_home,
+        "gitlab.com/example/subgroup/repository",
+    );
+    let log = temp.path().join("run-commands.log");
+
+    command_with_gitlab_forge(&temp, &log)
+        .current_dir(&repository)
+        .args(["run", "--once", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "GitLab repository validation succeeded, but task execution requires provider-aware workspace operations",
+        ));
+
+    let state_directory = fs::read_dir(&data_home)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|directory| directory.join("worktrees").exists())
+        .unwrap();
+    assert!(!state_directory.join("factory.sqlite3").exists());
+    let commands = fs::read_to_string(log).unwrap();
+    assert!(commands.contains("glab repo view"));
+    assert!(!commands.contains("gh "));
+}
+
+#[cfg(unix)]
+#[test]
+fn gitlab_docker_validation_stops_before_github_worker_credentials() {
+    let (temp, path, repository, data_home) = valid_config();
+    assert!(
+        ProcessCommand::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                "git@gitlab.com:example/subgroup/repository.git",
+            ])
+            .current_dir(&repository)
+            .status()
+            .unwrap()
+            .success()
+    );
+    pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
+    let contents = fs::read_to_string(&path)
+        .unwrap()
+        .replace(
+            "type = \"github\"\nproject_owner = \"example\"\nproject_number = 16\nstatus_field = \"Status\"\ntrusted_users = [\"example\"]",
+            "command = [\"./.flashy-factory/source.sh\"]",
+        )
+        .replace(
+            "type = \"label\"\nlabel = \"agent:ready\"",
+            "type = \"source\"\nstate = \"open\"\nlabels = [\"agent:ready\"]",
+        )
+        .replace("sandbox = \"worktree\"", "sandbox = \"docker_sandbox\"")
+        .replace(
+            "max_concurrent = 2",
+            "max_concurrent = 2\ntemplate = \"docker/sandbox-templates:codex\"\nmemory = \"8g\"\ncpus = 4\ngithub_token_env = \"FACTORY_GITHUB_TOKEN\"",
+        );
+    fs::write(&path, contents).unwrap();
+    let source = repository.join(".flashy-factory/source.sh");
+    fs::write(&source, "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[]}'\n").unwrap();
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(source, permissions).unwrap();
+    create_workspace_for_identity(
+        &repository,
+        &data_home,
+        "gitlab.com/example/subgroup/repository",
+    );
+    let log = temp.path().join("docker-commands.log");
+
+    command_with_gitlab_forge(&temp, &log)
+        .args(["validate", "--config", path.to_str().unwrap()])
+        .env("FACTORY_DATA_HOME", &data_home)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "GitLab Docker Sandbox credentials require provider-aware worker credentials",
+        ));
+
+    let commands = fs::read_to_string(log).unwrap();
+    assert!(commands.contains("glab repo view"));
+    assert!(!commands.contains("gh "));
 }
 
 #[test]
@@ -177,7 +383,7 @@ fn rejects_a_changed_repository_provider_before_selecting_durable_state() {
 }
 
 #[test]
-fn recognizes_a_pinned_gitlab_identity_without_enabling_unsupported_operations() {
+fn loads_a_pinned_gitlab_identity_without_creating_durable_state() {
     let (_temp, path, repository, data_home) = valid_config();
     assert!(
         ProcessCommand::new("git")
@@ -187,20 +393,24 @@ fn recognizes_a_pinned_gitlab_identity_without_enabling_unsupported_operations()
                 "origin",
                 "git@gitlab.com:example/subgroup/repository.git",
             ])
-            .current_dir(repository)
+            .current_dir(&repository)
             .status()
             .unwrap()
             .success()
     );
     pin_repository(&path, "gitlab", "gitlab.com/example/subgroup/repository");
-    let unused_data_home = data_home.with_file_name("unused-gitlab-state");
-
-    let error = Config::load_with_data_home(&path, &unused_data_home).unwrap_err();
-
-    assert!(
-        format!("{error:#}").contains("repository provider gitlab is not supported by this build")
+    create_workspace_for_identity(
+        &repository,
+        &data_home,
+        "gitlab.com/example/subgroup/repository",
     );
-    assert!(!unused_data_home.exists());
+    let config = Config::load_with_data_home(&path, &data_home).unwrap();
+
+    assert_eq!(config.repository.provider.to_string(), "gitlab");
+    assert_eq!(
+        config.repository.identity,
+        "gitlab.com/example/subgroup/repository"
+    );
 }
 
 #[test]
@@ -319,8 +529,7 @@ fn worktree_validation_requires_a_healthy_host_codex_cli() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    Command::cargo_bin("factory")
-        .unwrap()
+    command_with_healthy_codex(&temp)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", data_home)
         .env("PATH", path_value)
@@ -353,8 +562,7 @@ fn rejects_an_existing_database_that_is_not_writable() {
     permissions.set_mode(0o400);
     fs::set_permissions(&database, permissions).unwrap();
 
-    Command::cargo_bin("factory")
-        .unwrap()
+    command_with_healthy_codex(&temp)
         .args(["validate", "--config", path.to_str().unwrap()])
         .env("FACTORY_DATA_HOME", &data_home)
         .assert()
@@ -415,6 +623,7 @@ fn validates_a_configurable_source_label_trigger() {
         r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "gh version 2.80.0"; exit 0; fi
 if [ "$1" = "auth" ]; then exit 0; fi
+if [ "$1" = "repo" ]; then echo "example/repository"; exit 0; fi
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then echo '{"issues":[]}'; exit 0; fi
 exit 64
 "#,

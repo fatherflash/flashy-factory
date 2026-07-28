@@ -360,7 +360,7 @@ fn rejects_a_github_identity_that_differs_from_the_pinned_identity() {
         .assert()
         .failure()
         .stdout(predicate::str::contains(
-            "does not match pinned repository identity acme/repository",
+            "does not match configured identity acme/repository",
         ));
 
     assert!(
