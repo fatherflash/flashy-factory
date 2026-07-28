@@ -68,6 +68,7 @@ pub struct InitReport {
     resources: Vec<ResourceResult>,
     check: bool,
     execution_mode: ExecutionMode,
+    provider: RepositoryProvider,
 }
 
 impl InitReport {
@@ -121,7 +122,17 @@ impl fmt::Display for InitReport {
             if self.execution_mode == ExecutionMode::DockerSandbox {
                 writeln!(formatter, "  sbx login")?;
                 writeln!(formatter, "  sbx secret set -g openai --oauth")?;
-                writeln!(formatter, "  gh auth token | sbx secret set -g github")?;
+                match self.provider {
+                    RepositoryProvider::GitHub => {
+                        writeln!(formatter, "  gh auth token | sbx secret set -g github")?;
+                    }
+                    RepositoryProvider::GitLab => {
+                        writeln!(
+                            formatter,
+                            "  glab config get token --host gitlab.com | sbx secret set -g gitlab"
+                        )?;
+                    }
+                }
             }
             writeln!(formatter, "  factory validate")?;
             writeln!(formatter, "  factory run")
@@ -193,6 +204,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             .collect(),
             check: true,
             execution_mode: config.execution_mode,
+            provider: config.provider,
         });
     }
 
@@ -224,6 +236,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             resources,
             check: false,
             execution_mode: config.execution_mode,
+            provider: config.provider,
         });
     }
     resources.push(ResourceResult {
@@ -244,6 +257,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
             resources,
             check: false,
             execution_mode: config.execution_mode,
+            provider: config.provider,
         });
     }
     resources.push(ResourceResult {
@@ -266,6 +280,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
                 resources,
                 check: false,
                 execution_mode: config.execution_mode,
+                provider: config.provider,
             });
         }
         resources.push(ResourceResult {
@@ -280,6 +295,7 @@ pub fn initialize(options: InitOptions) -> Result<InitReport> {
         resources,
         check: false,
         execution_mode: config.execution_mode,
+        provider: config.provider,
     })
 }
 
@@ -518,7 +534,7 @@ fn plan_config(
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let repository_ref = repository_remote_ref(repository)
-                .context("repository has no resolvable GitHub remote")?;
+                .context("repository has no resolvable supported remote")?;
             let config_directory = path
                 .parent()
                 .and_then(Path::file_name)
@@ -588,6 +604,14 @@ fn default_config(
         document["worker"]["template"] = value("docker/sandbox-templates:codex-docker");
         document["worker"]["memory"] = value("8g");
         document["worker"]["cpus"] = value(4);
+        match repository.provider {
+            RepositoryProvider::GitHub => {
+                document["worker"]["github_token_env"] = value("FACTORY_GITHUB_TOKEN");
+            }
+            RepositoryProvider::GitLab => {
+                document["worker"]["gitlab_token_env"] = value("FACTORY_GITLAB_TOKEN");
+            }
+        }
     }
     document["source"] = Item::Table(Table::new());
     document["source"]["command"] = toml_edit::value(toml_edit::Array::from_iter([

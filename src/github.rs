@@ -1414,7 +1414,11 @@ impl GitHubClient {
         cancellation: &CancellationToken,
     ) -> Result<String> {
         let mut command = Command::new(&self.executable);
-        command.args(arguments).env_remove("GH_REPO");
+        command
+            .args(arguments)
+            .env_remove("GH_REPO")
+            .env_remove("GITLAB_TOKEN")
+            .env_remove("GLAB_TOKEN");
         if let Some(token) = token {
             command.env("GH_TOKEN", token);
         }
@@ -1895,14 +1899,26 @@ mod tests {
     #[tokio::test]
     async fn worker_token_validation_redacts_a_rejected_secret() {
         const TOKEN_ENV: &str = "FACTORY_GITHUB_VALIDATION_TEST_TOKEN";
+        let _environment = crate::TEST_ENV_LOCK.lock().await;
+        let _token = crate::TestEnvGuard::set(TOKEN_ENV, "worker-secret-value");
+        let _gitlab = crate::TestEnvGuard::set("GITLAB_TOKEN", "unrelated-gitlab-secret");
+        let _glab = crate::TestEnvGuard::set("GLAB_TOKEN", "unrelated-gitlab-secret");
         let temp = tempfile::tempdir().unwrap();
         let gh = temp.path().join("gh");
-        fs::write(&gh, "#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" >&2\nexit 1\n").unwrap();
+        fs::write(
+            &gh,
+            r#"#!/bin/sh
+set -eu
+test -z "${GITLAB_TOKEN:-}"
+test -z "${GLAB_TOKEN:-}"
+printf '%s' "$GH_TOKEN" >&2
+exit 1
+"#,
+        )
+        .unwrap();
         let mut permissions = fs::metadata(&gh).unwrap().permissions();
         permissions.set_mode(0o700);
         fs::set_permissions(&gh, permissions).unwrap();
-        unsafe { std::env::set_var(TOKEN_ENV, "worker-secret-value") };
-
         let error = GitHubClient::new(gh)
             .validate_token_env(TOKEN_ENV, &CancellationToken::new())
             .await

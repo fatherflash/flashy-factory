@@ -505,6 +505,7 @@ fn init_docker_sandbox_mode_creates_worker_configuration() {
     assert!(config.contains("template = \"docker/sandbox-templates:codex-docker\""));
     assert!(config.contains("memory = \"8g\""));
     assert!(config.contains("cpus = 4"));
+    assert!(config.contains("github_token_env = \"FACTORY_GITHUB_TOKEN\""));
     assert!(!config.contains("pids ="));
     assert!(
         !fixture
@@ -512,6 +513,30 @@ fn init_docker_sandbox_mode_creates_worker_configuration() {
             .join(".flashy-factory/Dockerfile")
             .exists()
     );
+}
+
+#[test]
+fn init_gitlab_docker_sandbox_uses_gitlab_worker_credentials() {
+    let fixture = Fixture::new();
+    set_origin(
+        &fixture.repository,
+        "git@gitlab.com:example/subgroup/repository.git",
+    );
+
+    fixture
+        .command()
+        .args(["init", "--execution-mode", "docker-sandbox"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "glab config get token --host gitlab.com | sbx secret set -g gitlab",
+        ))
+        .stdout(predicate::str::contains("sbx secret set -g github").not());
+
+    let config = fs::read_to_string(fixture.config_path()).unwrap();
+    assert!(config.contains("provider = \"gitlab\""));
+    assert!(config.contains("gitlab_token_env = \"FACTORY_GITLAB_TOKEN\""));
+    assert!(!config.contains("github_token_env"));
 }
 
 #[test]
