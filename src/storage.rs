@@ -41,7 +41,7 @@ pub fn inspect_reset_state(database: &Path) -> Result<ResetSummary> {
     )
     .with_context(|| {
         format!(
-            "failed to open Factory database read-only {}",
+            "failed to open Flashy Factory database read-only {}",
             database.display()
         )
     })?;
@@ -50,10 +50,10 @@ pub fn inspect_reset_state(database: &Path) -> Result<ResetSummary> {
         .context("failed to configure reset inspection timeout")?;
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .context("failed to inspect Factory schema version")?;
+        .context("failed to inspect Flashy Factory schema version")?;
     if version > SCHEMA_VERSION {
         bail!(
-            "Factory database schema version {version} is newer than supported version {SCHEMA_VERSION}"
+            "Flashy Factory database schema version {version} is newer than supported version {SCHEMA_VERSION}"
         );
     }
     let count = |table: &str, condition: &str| -> Result<usize> {
@@ -66,18 +66,18 @@ pub fn inspect_reset_state(database: &Path) -> Result<ResetSummary> {
                 [],
                 |row| row.get(0),
             )
-            .with_context(|| format!("failed to inspect Factory reset table {table}"))
+            .with_context(|| format!("failed to inspect Flashy Factory reset table {table}"))
     };
     let lease_cutoff = now_millis()?.saturating_sub(DAEMON_OWNER_LEASE_MILLIS);
     let live_daemons = if table_exists(&connection, "daemon_owners")? {
         let mut statement = connection
             .prepare("SELECT pid, heartbeat_at FROM daemon_owners")
-            .context("failed to prepare Factory daemon inspection")?;
+            .context("failed to prepare Flashy Factory daemon inspection")?;
         statement
             .query_map([], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, i64>(1)?)))
-            .context("failed to inspect Factory daemons")?
+            .context("failed to inspect Flashy Factory daemons")?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .context("failed to read Factory daemons")?
+            .context("failed to read Flashy Factory daemons")?
             .into_iter()
             .filter(|(pid, heartbeat)| *heartbeat >= lease_cutoff || process_is_alive(*pid))
             .count()
@@ -143,14 +143,14 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
             [table],
             |row| row.get(0),
         )
-        .context("failed to inspect Factory database schema")
+        .context("failed to inspect Flashy Factory database schema")
 }
 
 pub fn acquire_state_reset_lock(database: &Path) -> Result<StateLockGuard> {
     let file = open_state_lock(database)?;
     file.try_lock_exclusive().with_context(|| {
         format!(
-            "Factory state is in use and cannot be reset: {}",
+            "Flashy Factory state is in use and cannot be reset: {}",
             database.display()
         )
     })?;
@@ -160,7 +160,7 @@ pub fn acquire_state_reset_lock(database: &Path) -> Result<StateLockGuard> {
 fn acquire_shared_state_lock(database: &Path) -> Result<File> {
     let file = open_state_lock(database)?;
     file.lock_shared()
-        .with_context(|| format!("failed to lock Factory state {}", database.display()))?;
+        .with_context(|| format!("failed to lock Flashy Factory state {}", database.display()))?;
     Ok(file)
 }
 
@@ -169,7 +169,7 @@ fn open_state_lock(database: &Path) -> Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
-                "failed to create Factory state directory {}",
+                "failed to create Flashy Factory state directory {}",
                 parent.display()
             )
         })?;
@@ -177,7 +177,7 @@ fn open_state_lock(database: &Path) -> Result<File> {
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             bail!(
-                "Factory state lock must not be a symlink: {}",
+                "Flashy Factory state lock must not be a symlink: {}",
                 path.display()
             );
         }
@@ -185,7 +185,10 @@ fn open_state_lock(database: &Path) -> Result<File> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error).with_context(|| {
-                format!("failed to inspect Factory state lock {}", path.display())
+                format!(
+                    "failed to inspect Flashy Factory state lock {}",
+                    path.display()
+                )
             });
         }
     }
@@ -195,23 +198,36 @@ fn open_state_lock(database: &Path) -> Result<File> {
         .create(true)
         .truncate(false)
         .open(&path)
-        .with_context(|| format!("failed to open Factory state lock {}", path.display()))?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("failed to inspect Factory state lock {}", path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to open Flashy Factory state lock {}",
+                path.display()
+            )
+        })?;
+    let metadata = file.metadata().with_context(|| {
+        format!(
+            "failed to inspect Flashy Factory state lock {}",
+            path.display()
+        )
+    })?;
     if !metadata.is_file() {
         bail!(
-            "Factory state lock is not a regular file: {}",
+            "Flashy Factory state lock is not a regular file: {}",
             path.display()
         );
     }
     if fs::symlink_metadata(&path)
-        .with_context(|| format!("failed to inspect Factory state lock {}", path.display()))?
+        .with_context(|| {
+            format!(
+                "failed to inspect Flashy Factory state lock {}",
+                path.display()
+            )
+        })?
         .file_type()
         .is_symlink()
     {
         bail!(
-            "Factory state lock must not be a symlink: {}",
+            "Flashy Factory state lock must not be a symlink: {}",
             path.display()
         );
     }
@@ -227,13 +243,13 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
     fs::create_dir_all(data_directory).with_context(|| {
         format!(
-            "failed to create Factory data directory {}",
+            "failed to create Flashy Factory data directory {}",
             data_directory.display()
         )
     })?;
     tempfile::NamedTempFile::new_in(data_directory).with_context(|| {
         format!(
-            "Factory data directory is not writable: {}",
+            "Flashy Factory data directory is not writable: {}",
             data_directory.display()
         )
     })?;
@@ -242,17 +258,21 @@ pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
     if !database.exists() {
         return Ok(());
     }
-    let metadata = fs::symlink_metadata(&database)
-        .with_context(|| format!("failed to inspect Factory database {}", database.display()))?;
+    let metadata = fs::symlink_metadata(&database).with_context(|| {
+        format!(
+            "failed to inspect Flashy Factory database {}",
+            database.display()
+        )
+    })?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         bail!(
-            "Factory database must be a regular non-symlink file: {}",
+            "Flashy Factory database must be a regular non-symlink file: {}",
             database.display()
         );
     }
     if metadata.permissions().readonly() {
         bail!(
-            "Factory database is read-only and cannot be opened read-write: {}",
+            "Flashy Factory database is read-only and cannot be opened read-write: {}",
             database.display()
         );
     }
@@ -263,7 +283,7 @@ pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
     )
     .with_context(|| {
         format!(
-            "Factory database cannot be opened read-write: {}",
+            "Flashy Factory database cannot be opened read-write: {}",
             database.display()
         )
     })?;
@@ -271,7 +291,7 @@ pub fn validate_data_directory(data_directory: &Path) -> Result<()> {
         .execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
         .with_context(|| {
             format!(
-                "Factory database cannot acquire a write transaction: {}",
+                "Flashy Factory database cannot acquire a write transaction: {}",
                 database.display()
             )
         })?;
@@ -828,7 +848,9 @@ impl Ledger {
             |row| row.get::<_, bool>(0),
         )?;
         if active {
-            bail!("issue #{issue} has active Factory work; refusing to replace its approval");
+            bail!(
+                "issue #{issue} has active Flashy Factory work; refusing to replace its approval"
+            );
         }
         transaction
             .execute(
@@ -928,7 +950,7 @@ impl Ledger {
     pub fn open_in(data_directory: &Path) -> Result<Self> {
         fs::create_dir_all(data_directory).with_context(|| {
             format!(
-                "failed to create Factory data directory {}",
+                "failed to create Flashy Factory data directory {}",
                 data_directory.display()
             )
         })?;
@@ -1224,7 +1246,7 @@ impl Ledger {
                 .context("failed to count retained delivery workspaces")?;
             if retained >= 10 {
                 bail!(
-                    "Factory retains at most ten delivery worktrees; run `factory cleanup <run-id>` for one of: {}",
+                    "Flashy Factory retains at most ten delivery worktrees; run `factory cleanup <run-id>` for one of: {}",
                     retained_delivery_run_ids(&transaction)?
                 );
             }
@@ -2756,7 +2778,7 @@ impl Ledger {
                     .context("failed to resolve orphaned run task repository")?;
                 if run.repository != repository || task_repository.as_deref() != Some(repository) {
                     let detail = format!(
-                        "Factory could not resolve interrupted run {} to owning repository {}; run repository is {:?} and task repository is {:?}",
+                        "Flashy Factory could not resolve interrupted run {} to owning repository {}; run repository is {:?} and task repository is {:?}",
                         run.id, repository, run.repository, task_repository
                     );
                     transaction
@@ -2788,9 +2810,9 @@ impl Ledger {
                 "failed"
             };
             let error = if cancellation_requested {
-                "Factory completed a durable cancellation after its owning daemon stopped"
+                "Flashy Factory completed a durable cancellation after its owning daemon stopped"
             } else {
-                "Factory detected an interrupted run without a live owned process"
+                "Flashy Factory detected an interrupted run without a live owned process"
             };
             transaction
                 .execute(

@@ -64,7 +64,7 @@ fn install_codex_invocation_sentinel(binaries: &std::path::Path) -> String {
 fn manual_workflow_run_resolves_context_and_invokes_codex() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let workspace = temp.path().join("worktrees");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
@@ -142,7 +142,7 @@ printf 'Read-only workflow complete.' > "$output"
 fn failed_generic_workflow_run_prints_stderr_diagnostics() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
@@ -153,7 +153,7 @@ fn failed_generic_workflow_run_prints_stderr_diagnostics() {
         "Inspect without changing files.\n",
     )
     .unwrap();
-    let config_path = repository.join(".factory/config.toml");
+    let config_path = repository.join(".flashy-factory/config.toml");
     let config = fs::read_to_string(&config_path)
         .unwrap()
         .replace("runtime = \"codex\"", "runtime = \"claude-code\"");
@@ -202,7 +202,7 @@ exit 17
 fn run_executes_a_schedule_triggered_workflow_once() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
@@ -213,7 +213,7 @@ fn run_executes_a_schedule_triggered_workflow_once() {
         "Find one real bug in the code.\n",
     )
     .unwrap();
-    let config_path = repository.join(".factory/config.toml");
+    let config_path = repository.join(".flashy-factory/config.toml");
 
     let prompt_capture = temp.path().join("prompt.txt");
     let executable = binaries.join("codex");
@@ -277,13 +277,13 @@ printf 'Scheduled workflow complete.' > "$output"
 fn run_rejects_a_direct_schedule_when_docker_is_configured() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     let codex_marker = temp.path().join("codex-invoked");
     fs::create_dir_all(&workflows).unwrap();
     initialize_repository(&repository, &data_home);
-    let config_path = repository.join(".factory/config.toml");
+    let config_path = repository.join(".flashy-factory/config.toml");
     let config = fs::read_to_string(&config_path)
         .unwrap()
         .replace("sandbox = \"worktree\"", "sandbox = \"docker_sandbox\"")
@@ -316,7 +316,7 @@ fn run_rejects_a_direct_schedule_when_docker_is_configured() {
 fn run_rejects_source_triggered_workflows_before_launch() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     let codex_marker = temp.path().join("codex-invoked");
@@ -344,7 +344,7 @@ fn run_rejects_source_triggered_workflows_before_launch() {
 fn concurrent_manual_runs_exit_when_shared_output_is_full_and_unread() {
     let temp = tempfile::tempdir().unwrap();
     let repository = temp.path().join("repository");
-    let workflows = repository.join(".factory/workflows");
+    let workflows = repository.join(".flashy-factory/workflows");
     let data_home = temp.path().join("factory-data");
     let binaries = temp.path().join("bin");
     fs::create_dir_all(&workflows).unwrap();
@@ -428,12 +428,12 @@ printf 'Verbose workflow complete.' > "$output"
                     child.wait().unwrap();
                 }
             }
-            panic!("Factory runs hung while shared stdout and stderr were full and unread");
+            panic!("Flashy Factory runs hung while shared stdout and stderr were full and unread");
         }
         thread::sleep(Duration::from_millis(10));
     }
 
     for status in statuses.into_iter().flatten() {
-        assert!(status.success(), "Factory exited with {status}");
+        assert!(status.success(), "Flashy Factory exited with {status}");
     }
 }

@@ -1,14 +1,14 @@
-# Develop Factory in a Docker Sandbox
+# Develop Flashy Factory in a Docker Sandbox
 
-Factory includes a custom Docker Sandbox template with the Rust toolchain and
+Flashy Factory includes a custom Docker Sandbox template with the Rust toolchain and
 native build dependencies needed to format, lint, build, and test the project.
 It extends Docker's `codex-docker` template, so Codex and a private Docker
 daemon are available inside the sandbox.
 
-This template is separate from the sandbox template Factory's own workers use
+This template is separate from the sandbox template Flashy Factory's own workers use
 when `worker.sandbox = "docker_sandbox"` (configured with `worker.template`,
 e.g. `docker/sandbox-templates:codex-docker`); this template is only the
-development environment used to work on Factory itself with `sbx`.
+development environment used to work on Flashy Factory itself with `sbx`.
 
 ## Build and load the template
 

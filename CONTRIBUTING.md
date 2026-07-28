@@ -1,6 +1,6 @@
-# Contributing to Factory
+# Contributing to Flashy Factory
 
-Thanks for helping improve Factory. Bug reports, design feedback, documentation
+Thanks for helping improve Flashy Factory. Bug reports, design feedback, documentation
 fixes, and focused code changes are all welcome.
 
 ## Before you start
@@ -18,16 +18,16 @@ Security vulnerabilities should be reported privately as described in
 
 ## Development setup
 
-Factory requires a current stable Rust toolchain. Some integration tests also
+Flashy Factory requires a current stable Rust toolchain. Some integration tests also
 exercise local `git` and GitHub CLI behavior.
 
 ```sh
-git clone https://github.com/owainlewis/factory.git
-cd factory
+git clone https://github.com/fatherflash/flashy-factory.git
+cd flashy-factory
 cargo build --locked
 ```
 
-To exercise Factory against GitHub, install and authenticate the GitHub CLI.
+To exercise Flashy Factory against GitHub, install and authenticate the GitHub CLI.
 Most unit and integration tests do not require live GitHub access.
 
 ## Making a change

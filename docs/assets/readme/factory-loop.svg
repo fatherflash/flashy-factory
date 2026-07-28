@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940" role="img" aria-labelledby="title desc">
-  <title id="title">How Factory moves work from intent to a human shipping decision</title>
-  <desc id="desc">Human intent enters a trusted ticket queue. Factory matches a trigger, creates a durable task, and runs a workflow in an isolated worker. Checks produce evidence and a reviewable pull request. A human reviews and decides whether to merge. Shipped changes create signals that return to the ticket queue.</desc>
+  <title id="title">How Flashy Factory moves work from intent to a human shipping decision</title>
+  <desc id="desc">Human intent enters a trusted ticket queue. Flashy Factory matches a trigger, creates a durable task, and runs a workflow in an isolated worker. Checks produce evidence and a reviewable pull request. A human reviews and decides whether to merge. Shipped changes create signals that return to the ticket queue.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0 0 10 5 0 10z" fill="#888378"/>
@@ -79,5 +79,5 @@
 
   <path class="flow" d="M400 800H320"/>
 
-  <text class="text detail" x="360" y="910" text-anchor="middle">Factory coordinates the work. Humans remain accountable for what ships.</text>
+  <text class="text detail" x="360" y="910" text-anchor="middle">Flashy Factory coordinates the work. Humans remain accountable for what ships.</text>
 </svg>

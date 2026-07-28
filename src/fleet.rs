@@ -11,8 +11,10 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    Config, canonical_directory_or_missing, ensure_primary_checkout, expand_path,
-    repository_config_path, repository_data_directory_for_identity, repository_remote_identity,
+    CONFIG_DIRECTORY, Config, LEGACY_CONFIG_DIRECTORY, canonical_directory_or_missing,
+    configured_data_home, ensure_primary_checkout, expand_path,
+    repository_data_directory_for_identity, repository_remote_identity,
+    resolve_repository_config_path,
 };
 use crate::storage::DATABASE_NAME;
 use crate::workflow::{Trigger, WorkflowCatalog};
@@ -309,7 +311,7 @@ pub fn activate_fleet(
     let _ = fs::remove_file(&state_path);
     let process_id = std::process::id();
     let process_identity = crate::runtime::process_identity(process_id)
-        .context("failed to resolve Factory supervisor process identity")?;
+        .context("failed to resolve Flashy Factory supervisor process identity")?;
     let manifest = ActiveFleetManifest {
         process_id,
         process_identity: process_identity.clone(),
@@ -404,14 +406,34 @@ fn active_fleet_state_path(path: &Path) -> Result<PathBuf> {
     let resolved = expand_path(path, &current_dir)?;
     let resolved = resolved.canonicalize().unwrap_or(resolved);
     let digest = crate::hash::sha256_hex(resolved.as_os_str().as_encoded_bytes());
-    let base = match env::var_os("FACTORY_DATA_HOME").map(PathBuf::from) {
-        Some(base) if base.is_absolute() => base,
-        Some(base) => current_dir.join(base),
+    let configured_base = configured_data_home()?;
+    let preferred_base = match configured_base.as_ref() {
+        Some(base) => base.clone(),
         None => dirs::home_dir()
-            .map(|home| home.join(".factory"))
-            .context("could not determine Factory data directory")?,
+            .map(|home| home.join(CONFIG_DIRECTORY))
+            .context("could not determine Flashy Factory data directory")?,
     };
-    Ok(base.join("fleets").join(format!("{}.json", &digest[..20])))
+    let file_name = format!("{}.json", &digest[..20]);
+    let preferred = preferred_base.join("fleets").join(&file_name);
+    if configured_base.is_some() {
+        return Ok(preferred);
+    }
+    let legacy = dirs::home_dir()
+        .map(|home| {
+            home.join(LEGACY_CONFIG_DIRECTORY)
+                .join("fleets")
+                .join(&file_name)
+        })
+        .context("could not determine legacy Flashy Factory data directory")?;
+    match (preferred.exists(), legacy.exists()) {
+        (true, true) => bail!(
+            "active fleet state exists in both {} and {}; remove the stale manifest before continuing",
+            preferred.display(),
+            legacy.display()
+        ),
+        (false, true) => Ok(legacy),
+        _ => Ok(preferred),
+    }
 }
 
 fn resolve_repository_path(path: &Path, base: &Path) -> Result<PathBuf> {
@@ -432,7 +454,7 @@ impl FleetRepository {
 
     pub fn load_runtime(&self) -> Result<RepositoryRuntime> {
         validate_checkout(&self.path, &self.identity)?;
-        let config_path = repository_config_path(&self.path);
+        let config_path = resolve_repository_config_path(&self.path)?;
         let mut config = if self.enabled {
             Config::load(&config_path)?
         } else {

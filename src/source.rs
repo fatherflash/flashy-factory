@@ -250,7 +250,7 @@ impl SourceClient {
                 && let Ok(ticket) = serde_json::from_str::<SourceTicketContext>(payload)
             {
                 eprintln!(
-                    "Factory matched {}: {} [{}; labels={}]",
+                    "Flashy Factory matched {}: {} [{}; labels={}]",
                     ticket.key,
                     one_line(&ticket.title, 120),
                     ticket.state,
@@ -258,7 +258,7 @@ impl SourceClient {
                 );
                 if !ticket.description.trim().is_empty() {
                     eprintln!(
-                        "Factory issue description: {}",
+                        "Flashy Factory issue description: {}",
                         one_line(&ticket.description, 240)
                     );
                 }

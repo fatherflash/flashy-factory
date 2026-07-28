@@ -51,10 +51,14 @@ fn repository(root: &Path, data_home: &Path, name: &str, source_body: &str) -> P
             .unwrap()
             .success()
     );
-    fs::create_dir_all(path.join(".factory/workflows")).unwrap();
-    fs::write(path.join(".factory/workflows/implement.md"), "Implement.\n").unwrap();
+    fs::create_dir_all(path.join(".flashy-factory/workflows")).unwrap();
     fs::write(
-        path.join(".factory/config.toml"),
+        path.join(".flashy-factory/workflows/implement.md"),
+        "Implement.\n",
+    )
+    .unwrap();
+    fs::write(
+        path.join(".flashy-factory/config.toml"),
         r#"version = 1
 poll_every = "60s"
 
@@ -66,20 +70,20 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = ["./.factory/source.sh"]
+command = ["./.flashy-factory/source.sh"]
 
 [trigger.implement]
 type = "source"
 state = "ready"
 labels = ["factory:ready"]
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 "#,
     )
     .unwrap();
-    executable(&path.join(".factory/source.sh"), source_body);
+    executable(&path.join(".flashy-factory/source.sh"), source_body);
     for arguments in [
         &["config", "user.email", "factory@example.com"][..],
-        &["config", "user.name", "Factory Test"][..],
+        &["config", "user.name", "Flashy Factory Test"][..],
         &["add", "."][..],
         &["commit", "--quiet", "-m", "fixture"][..],
         &["update-ref", "refs/remotes/origin/main", "HEAD"][..],
@@ -355,7 +359,7 @@ fn two_repository_idle_fleet_stays_running_and_launches_no_workers() {
     assert!(output.status.success(), "{output:?}");
     assert!(!worker_marker.exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Factory fleet ready: repositories=2 healthy=2"));
+    assert!(stderr.contains("Flashy Factory fleet ready: repositories=2 healthy=2"));
 }
 
 #[test]
@@ -400,7 +404,7 @@ fn unavailable_repository_does_not_stop_a_healthy_peer() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("repository=acme/failed status=unavailable"));
-    assert!(stderr.contains("Factory fleet ready: repositories=2 healthy=1"));
+    assert!(stderr.contains("Flashy Factory fleet ready: repositories=2 healthy=1"));
     assert!(!worker_marker.exists());
 }
 

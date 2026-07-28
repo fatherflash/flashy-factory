@@ -15,6 +15,11 @@ use crate::hash::encode_lower;
 use crate::runtime::build_runtime;
 use crate::storage::DATABASE_NAME;
 
+pub const CONFIG_DIRECTORY: &str = ".flashy-factory";
+pub const LEGACY_CONFIG_DIRECTORY: &str = ".factory";
+pub const DATA_HOME_ENV: &str = "FLASHY_FACTORY_DATA_HOME";
+pub const LEGACY_DATA_HOME_ENV: &str = "FACTORY_DATA_HOME";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub repositories: Vec<PathBuf>,
@@ -207,18 +212,22 @@ impl Config {
         let config_dir = path
             .parent()
             .context("configuration path has no parent directory")?;
-        if config_dir.file_name().and_then(|name| name.to_str()) != Some(".factory") {
+        let config_directory = config_dir.file_name().and_then(|name| name.to_str());
+        if !matches!(
+            config_directory,
+            Some(CONFIG_DIRECTORY | LEGACY_CONFIG_DIRECTORY)
+        ) {
             bail!(
-                "Factory v1 requires repository-local configuration at <git-root>/.factory/config.toml; legacy global configuration is not executable"
+                "Flashy Factory v1 requires repository-local configuration at <git-root>/{CONFIG_DIRECTORY}/config.toml (or the legacy <git-root>/{LEGACY_CONFIG_DIRECTORY}/config.toml); legacy global configuration is not executable"
             );
         }
         let repository = config_dir
             .parent()
-            .context(".factory configuration has no repository parent")?;
-        let expected = repository_config_path(repository);
+            .context("Flashy Factory configuration has no repository parent")?;
+        let expected = resolve_repository_config_path(repository)?;
         if path != expected {
             bail!(
-                "Factory repository configuration must be {}; got {}",
+                "Flashy Factory repository configuration must be {}; got {}",
                 expected.display(),
                 path.display()
             );
@@ -231,14 +240,14 @@ impl Config {
             allow_missing_workspace,
             data_home,
         )
-        .with_context(|| format!("invalid Factory configuration in {}", path.display()))
+        .with_context(|| format!("invalid Flashy Factory configuration in {}", path.display()))
     }
 
     pub(crate) fn validate_candidate(contents: &str, repository: &Path) -> Result<Self> {
         let raw: RawConfig =
             toml::from_str(contents).context("failed to parse candidate config")?;
         Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true, None)
-            .context("invalid candidate Factory configuration")
+            .context("invalid candidate Flashy Factory configuration")
     }
 
     fn resolve_with_workspace_probe<F>(
@@ -538,8 +547,10 @@ fn resolve_workflow_path(name: &str, value: &str, repository: &Path) -> Result<P
     {
         bail!("{name} must be a repository-relative path without . or .. components");
     }
-    if !relative.starts_with(Path::new(".factory/workflows")) {
-        bail!("{name} must be inside .factory/workflows");
+    if !relative.starts_with(Path::new(".flashy-factory/workflows"))
+        && !relative.starts_with(Path::new(".factory/workflows"))
+    {
+        bail!("{name} must be inside .flashy-factory/workflows (or legacy .factory/workflows)");
     }
     if relative
         .extension()
@@ -760,14 +771,51 @@ fn validate_display_name(name: &str, value: String) -> Result<String> {
 }
 
 pub fn repository_config_path(repository: &Path) -> PathBuf {
-    repository.join(".factory/config.toml")
+    repository.join(CONFIG_DIRECTORY).join("config.toml")
+}
+
+pub fn legacy_repository_config_path(repository: &Path) -> PathBuf {
+    repository.join(LEGACY_CONFIG_DIRECTORY).join("config.toml")
+}
+
+pub fn resolve_repository_config_path(repository: &Path) -> Result<PathBuf> {
+    let preferred = repository_config_path(repository);
+    let legacy = legacy_repository_config_path(repository);
+    match (preferred.exists(), legacy.exists()) {
+        (true, true) => bail!(
+            "both {} and {} exist; keep one repository configuration to avoid ambiguous Flashy Factory state",
+            preferred.display(),
+            legacy.display()
+        ),
+        (true, false) => Ok(preferred),
+        (false, true) => Ok(legacy),
+        (false, false) => Ok(preferred),
+    }
+}
+
+pub fn configured_data_home() -> Result<Option<PathBuf>> {
+    let preferred = env::var_os(DATA_HOME_ENV).map(PathBuf::from);
+    let legacy = env::var_os(LEGACY_DATA_HOME_ENV).map(PathBuf::from);
+    match (preferred, legacy) {
+        (Some(preferred), Some(legacy)) => {
+            let preferred = resolve_data_base(preferred)?;
+            let legacy = resolve_data_base(legacy)?;
+            if preferred != legacy {
+                bail!(
+                    "{DATA_HOME_ENV} and legacy {LEGACY_DATA_HOME_ENV} resolve to different directories ({} and {}); set only one or make them match",
+                    preferred.display(),
+                    legacy.display()
+                );
+            }
+            Ok(Some(preferred))
+        }
+        (Some(base), None) | (None, Some(base)) => Ok(Some(resolve_data_base(base)?)),
+        (None, None) => Ok(None),
+    }
 }
 
 pub fn repository_data_directory(repository: &Path) -> Result<PathBuf> {
-    repository_data_directory_with_base(
-        repository,
-        env::var_os("FACTORY_DATA_HOME").map(PathBuf::from),
-    )
+    repository_data_directory_with_base(repository, configured_data_home()?)
 }
 
 fn repository_data_directory_with_base(
@@ -789,11 +837,7 @@ pub(crate) fn repository_data_directory_for_identity(
     if identity.trim().is_empty() {
         bail!("repository identity must not be empty");
     }
-    repository_data_directory_for_resolved_identity(
-        repository,
-        identity,
-        env::var_os("FACTORY_DATA_HOME").map(PathBuf::from),
-    )
+    repository_data_directory_for_resolved_identity(repository, identity, configured_data_home()?)
 }
 
 fn repository_data_directory_for_resolved_identity(
@@ -810,25 +854,40 @@ fn repository_data_directory_for_resolved_identity(
     let base = match configured_base.as_ref() {
         Some(base) => resolve_data_base(base.clone())?,
         None => dirs::home_dir()
-            .map(|path| path.join(".factory"))
-            .context("could not determine Factory data directory")?,
+            .map(|path| path.join(CONFIG_DIRECTORY))
+            .context("could not determine Flashy Factory data directory")?,
     };
     let data_directory = base.join(digest);
     if configured_base.is_some() {
         return Ok(data_directory);
     }
+    let legacy_base = dirs::home_dir()
+        .map(|path| path.join(LEGACY_CONFIG_DIRECTORY))
+        .context("could not determine legacy Flashy Factory data directory")?;
+    let legacy_directory = legacy_base.join(digest);
+    let preferred_database_exists = data_directory.join(DATABASE_NAME).exists();
+    let legacy_database_exists = legacy_directory.join(DATABASE_NAME).exists();
+    let selected_directory = match (preferred_database_exists, legacy_database_exists) {
+        (true, true) => bail!(
+            "Flashy Factory found repository ledgers in both {} and {}; archive one before continuing to avoid split durable work",
+            data_directory.display(),
+            legacy_directory.display()
+        ),
+        (false, true) => legacy_directory,
+        _ => data_directory,
+    };
     if let Some(previous_base) = dirs::data_local_dir().map(|path| path.join("factory")) {
         let previous_directory = previous_base.join(digest);
         if previous_directory.join(DATABASE_NAME).exists() {
             bail!(
-                "Factory found repository state at the previous default {} and refused to use {} because abandoning the previous ledger could repeat durable work; set FACTORY_DATA_HOME={} to keep using the existing state, or archive the previous ledger before choosing the new default",
+                "Flashy Factory found repository state at the previous default {} and refused to use {} because abandoning the previous ledger could repeat durable work; set {DATA_HOME_ENV}={} to keep using the existing state, or archive the previous ledger before choosing the new default",
                 previous_directory.display(),
-                data_directory.display(),
+                selected_directory.display(),
                 previous_base.display()
             );
         }
     }
-    Ok(data_directory)
+    Ok(selected_directory)
 }
 
 fn resolve_data_base(base: PathBuf) -> Result<PathBuf> {
@@ -915,7 +974,7 @@ pub(crate) fn ensure_primary_checkout(repository: &Path) -> Result<()> {
         .canonicalize()
         .context("failed to resolve common Git directory")?;
     if git_dir != common_dir {
-        bail!("Factory must run from the primary checkout, not a linked Git worktree");
+        bail!("Flashy Factory must run from the primary checkout, not a linked Git worktree");
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
-# Factory vision and technical design
+# Flashy Factory vision and technical design
 
-This is the source of truth for what Factory is, why it exists, and how its
+This is the source of truth for what Flashy Factory is, why it exists, and how its
 implemented architecture works. The [setup guide](local-v1.md) explains how to
 run it, while the [operations guide](operations.md) explains how to inspect and
 recover it.
@@ -12,7 +12,7 @@ them as one-off terminal sessions. A person notices work, chooses a prompt,
 starts an agent, waits for it, forwards feedback, and remembers to try again.
 The quality of the process depends on who happens to be driving.
 
-Factory makes that process repeatable. It gives software work the same kind of
+Flashy Factory makes that process repeatable. It gives software work the same kind of
 durable, observable execution that CI/CD gives builds and deployments:
 
 ```text
@@ -25,9 +25,9 @@ configured condition is an explicit request for an agent pass. The agent reads
 the live ticket, works in the repository, and returns its result to the same
 human-owned review loop.
 
-Factory is not an autonomous product manager or a replacement for engineering
+Flashy Factory is not an autonomous product manager or a replacement for engineering
 judgment. Humans decide what matters, resolve ambiguous product choices, review
-the result, and remain accountable for what ships. Factory removes the manual
+the result, and remain accountable for what ships. Flashy Factory removes the manual
 coordination between those decisions.
 
 The long-term goal is a small, reliable kernel that can supervise different
@@ -44,28 +44,28 @@ external state after a timeout, crash, or restart.
 
 ### Configuration owns mechanism; prompts own policy
 
-Factory owns polling, matching, durable claims, concurrency, timeouts,
+Flashy Factory owns polling, matching, durable claims, concurrency, timeouts,
 isolation, cancellation, history, and recovery. Repository-owned Markdown
 workflows tell the agent what outcome to produce and what policy to follow.
 
-This boundary lets teams change their process without changing Factory. Triage,
+This boundary lets teams change their process without changing Flashy Factory. Triage,
 implementation, security review, and maintenance are prompt conventions, not
 built-in pipeline stages.
 
 ### Idle must be cheap
 
-Polling and schedule evaluation are deterministic local work. Factory starts no
+Polling and schedule evaluation are deterministic local work. Flashy Factory starts no
 model when no trigger matches and no schedule is due.
 
 ### Human review is the shipping boundary
 
-Factory's default workflows may update tickets and open pull requests, but they
+Flashy Factory's default workflows may update tickets and open pull requests, but they
 do not merge or enable automatic merge. Credentials and branch protection must
 preserve that boundary.
 
 ### Recovery uses real external state
 
-Factory records attempts and workspace ownership, then lets a later run inspect
+Flashy Factory records attempts and workspace ownership, then lets a later run inspect
 the current issue, branch, pull request, CI, and review state. It does not try to
 replay a fixed list of GitHub mutations.
 
@@ -77,7 +77,7 @@ evidence justifies them.
 
 ## System model
 
-Factory has four concepts:
+Flashy Factory has four concepts:
 
 | Concept | Responsibility |
 | --- | --- |
@@ -98,20 +98,21 @@ source -> matching event -> durable task -> atomic claim -> revalidate
    +---- ticket, pull request, CI, and review <- worker in sandbox
 ```
 
-The GitHub adapter queries native issue state and labels. This repository uses
-one-shot readiness labels as its machine-facing gates. Project fields may
-track lifecycle and priority for humans, but the polling loop does not query
-them.
+The Asana adapter queries exact project sections and optional tag names. This
+repository uses section moves as its machine-facing gates and human
+authorization boundary.
 
 ## Repository contract
 
 Each managed repository owns:
 
 ```text
-.factory/
+.flashy-factory/
+├── clients/
+│   └── asana
 ├── config.toml
 ├── sources/
-│   └── github
+│   └── asana
 └── workflows/
     ├── bug-finder.md
     ├── implement.md
@@ -132,26 +133,24 @@ maximum_timeout = "8h"
 max_concurrent = 1
 
 [source]
-command = [".factory/sources/github"]
+command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [trigger.triage]
 type = "source"
-state = "open"
-labels = ["factory:ready-for-spec"]
-workflow = ".factory/workflows/triage.md"
+state = "Ready For Spec"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
-state = "open"
-labels = ["factory:ready-to-implement"]
-workflow = ".factory/workflows/implement.md"
+state = "Ready To Implement"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 
 [trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
-workflow = ".factory/workflows/bug-finder.md"
+workflow = ".flashy-factory/workflows/bug-finder.md"
 ```
 
 Trigger types are tagged so validation can reject mixed, unknown, or misspelled
@@ -159,12 +158,12 @@ fields. Trigger IDs are stable queue identities, not semantic stages.
 
 Workflow files contain instructions only. They have no frontmatter and cannot
 override worker configuration. A workflow may direct the agent to use
-repository instructions or skills, but Factory does not install, interpret, or
+repository instructions or skills, but Flashy Factory does not install, interpret, or
 version those formats.
 
 ## Source boundary
 
-For every source trigger, Factory invokes the configured command with:
+For every source trigger, Flashy Factory invokes the configured command with:
 
 ```text
 --state <state> --label <label> ...
@@ -176,34 +175,34 @@ The command returns a provider-neutral JSON object:
 {
   "issues": [
     {
-      "key": "#56",
+      "key": "123456789",
       "title": "Fix the daemon",
       "description": "What is broken and why",
-      "state": "open",
-      "labels": ["factory:ready-to-implement"],
-      "url": "https://github.com/example/repo/issues/56"
+      "state": "Ready To Implement",
+      "labels": ["bug"],
+      "url": "https://app.asana.com/0/123/123456789"
     }
   ]
 }
 ```
 
-Factory bounds execution time and output size, validates the schema, rejects
-duplicate keys, and verifies that every result satisfies the requested
-condition. The included GitHub adapter implements this contract with the
-authenticated `gh` CLI. The experimental [Jira adapter](jira.md) demonstrates
-the same boundary for another provider.
+Flashy Factory bounds execution time and output size, validates the schema,
+rejects duplicate keys, and verifies that every result satisfies the requested
+condition. The included Asana adapter implements this contract through the
+authenticated repository client. The GitHub and experimental
+[Jira](jira.md) adapters demonstrate the same boundary for other providers.
 
 The source command is part of the trust boundary. Source adapters do not need
 to filter by issue author, but only trusted people may satisfy their configured
-condition. For the generated adapter and this repository, that means applying
-the configured triggering label.
+condition. For this repository, that means moving a task into a configured
+Asana section or applying a required tag.
 
 ## Trigger semantics
 
 ### Source triggers
 
 A source trigger runs once for each unchanged revision during a continuous
-match. Factory records the ticket and trigger pair when it first appears.
+match. Flashy Factory records the ticket and trigger pair when it first appears.
 Repeated polls of the same revision do not create duplicate tasks. Leaving the
 condition rearms the pair, so returning later creates a new task for a review or
 correction pass.
@@ -211,10 +210,10 @@ correction pass.
 An adapter may supply a revision to identify a new event without requiring the
 ticket to leave the condition first. A changed revision can create a new task
 when no task for that ticket is already queued or running. When the adapter
-omits it, Factory derives a stable revision from the ticket key and requested
+omits it, Flashy Factory derives a stable revision from the ticket key and requested
 condition.
 
-Immediately before starting a source task, Factory runs the same query again.
+Immediately before starting a source task, Flashy Factory runs the same query again.
 If the ticket no longer matches, the worker does not start. This closes the
 race between polling and execution.
 
@@ -230,7 +229,7 @@ or create tickets that enter the same human-controlled loop.
 ## Task and worker lifecycle
 
 SQLite stores tasks, trigger observations, run attempts, cancellation requests,
-bounded output, workspace ownership, and sandbox metadata under Factory's data
+bounded output, workspace ownership, and sandbox metadata under Flashy Factory's data
 directory outside the repository.
 
 A database uniqueness constraint deduplicates task identities. An atomic
@@ -249,7 +248,7 @@ Execution follows this sequence:
 7. Run Codex while recording bounded activity and cancellation state.
 8. Record the outcome and reconcile or retain the workspace.
 
-Unexpected exits remain visible as run attempts. On startup, Factory reconciles
+Unexpected exits remain visible as run attempts. On startup, Flashy Factory reconciles
 active tasks and owned resources. Interrupted work receives up to two bounded
 recovery attempts; later work continues from durable repository and ticket
 state.
@@ -258,7 +257,7 @@ state.
 
 ### Worktree mode
 
-Worktree mode creates a Factory-owned Git worktree outside the primary checkout
+Worktree mode creates a Flashy Factory-owned Git worktree outside the primary checkout
 and runs the host Codex CLI inside it. It isolates branches and working-tree
 state, but shares the host filesystem, processes, network, and credentials.
 Only trusted work should use this mode.
@@ -274,9 +273,9 @@ failed, or cancelled work are retained for inspection and explicit cleanup.
 Docker Sandbox mode creates a standalone host clone and a private clone inside
 a microVM. The worker has a separate kernel and Docker daemon, bounded CPU and
 memory, deny-by-default networking, and proxy-managed OpenAI and GitHub
-credentials. The canonical checkout and Factory database are not mounted.
+credentials. The canonical checkout and Flashy Factory database are not mounted.
 
-Before removing the sandbox, Factory snapshots tracked and untracked changes
+Before removing the sandbox, Flashy Factory snapshots tracked and untracked changes
 and fetches that commit into trusted host Git metadata. If handoff fails, it
 retains the sandbox and host clone for recovery.
 
@@ -286,7 +285,7 @@ credentials must be narrow and protected branches must remain effective.
 
 ## Responsibility boundaries
 
-Factory owns:
+Flashy Factory owns:
 
 - repository-local configuration validation;
 - source command execution and normalized result validation;
@@ -305,7 +304,7 @@ The workflow and agent own:
 - creating or updating branches and pull requests;
 - responding to feedback and reporting evidence.
 
-Factory deliberately does not encode comments, branches, pull requests, CI
+Flashy Factory deliberately does not encode comments, branches, pull requests, CI
 repair, or ticket transitions as deterministic built-in operations. Those steps
 change often, require judgment, and are best reconciled by an agent against live
 state.
@@ -332,7 +331,7 @@ the implementation label. Implementation removes its trigger label, makes the
 change, verifies it, and opens or updates a pull request. Human review and CI
 may send the ticket through another pass.
 
-The label names and workflow details belong to the repository. Factory only
+The label names and workflow details belong to the repository. Flashy Factory only
 sees a condition connected to a prompt.
 
 ## Security model
@@ -366,13 +365,13 @@ The implemented V1 supports:
 
 The architecture leaves room for:
 
-- Jira, Linear, GitLab, and pull-request source adapters;
+- Linear, GitLab, and pull-request source adapters;
 - multiple repositories or sources in one daemon;
 - agent runtimes other than Codex;
 - webhooks as a wake-up optimization;
 - hosted worker pools and stronger isolation;
 - deployment workflows where a separate policy defines authorization.
 
-These are extension points, not promises. Factory does not currently provide a
+These are extension points, not promises. Flashy Factory does not currently provide a
 workflow graph, a web control plane, automatic merge, or a provider-specific
 action language.

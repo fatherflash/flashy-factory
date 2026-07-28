@@ -112,7 +112,7 @@ impl WorkflowCatalog {
             .collect::<Vec<_>>();
         if !errors.is_empty() {
             anyhow::bail!(
-                "Factory cannot start with invalid ticket workflows:\n{}",
+                "Flashy Factory cannot start with invalid ticket workflows:\n{}",
                 errors.join("\n")
             );
         }
@@ -127,7 +127,7 @@ impl WorkflowCatalog {
             .map(|entry| format!("{}: {}", entry.path.display(), entry.errors.join("; ")))
             .collect::<Vec<_>>();
         if !errors.is_empty() {
-            anyhow::bail!("invalid Factory workflows:\n{}", errors.join("\n"));
+            anyhow::bail!("invalid Flashy Factory workflows:\n{}", errors.join("\n"));
         }
         Ok(())
     }

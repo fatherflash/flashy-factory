@@ -1,105 +1,65 @@
-# Ticket classification
+# Asana task classification and lifecycle
 
-Factory stores three independent ticket dimensions:
+Flashy Factory uses three independent dimensions in the repository's Asana
+project:
 
-- type classifies the work;
-- priority ranks accepted work;
-- status records lifecycle.
+- the **section** records lifecycle and authorizes workflow runs;
+- one **type tag** classifies the work;
+- one **priority tag** ranks accepted work.
 
-`.factory/tickets.toml` defines whether each dimension uses labels or a
-single-select project field. `.factory/config.toml` separately defines the
-one-shot labels that authorize Factory workflows. A workflow establishes and
-advances any configured lifecycle state before consuming its authorization
-label.
+## Lifecycle sections
 
-## Type
+```text
+Ready For Spec → Creating Spec → Awaiting Approval
+                                  ↓ human approval
+Ready To Implement → Implementing → Reviewing → Done
+```
 
-Every open ticket has exactly one type value. This repository stores type as a
-label:
+`Ready For Spec` and `Ready To Implement` are the only polled sections in the
+checked-in configuration. Moving a task into one of them is an explicit request
+for an agent pass. Only trusted project members should have permission to make
+those moves.
 
-| Label | Meaning |
+The triage workflow moves a claimed task to `Creating Spec`, then routes a
+complete specification to `Awaiting Approval`. A human reviews the result and
+moves it to `Ready To Implement`. The implementation workflow claims it by
+moving it to `Implementing`, then moves a green pull-request handoff to
+`Reviewing`. Humans remain responsible for merge and `Done`.
+
+## Type tags
+
+Every actionable task should have exactly one:
+
+| Tag | Meaning |
 | --- | --- |
-| `bug` | Existing behaviour is incorrect. |
-| `enhancement` | New capability or an improvement to existing behaviour. |
+| `bug` | Existing behavior is incorrect. |
+| `enhancement` | New capability or improved behavior. |
 | `documentation` | Documentation is the primary deliverable. |
 
-Features are enhancements. Do not add a separate `feature` label.
+Features are enhancements. Suspected vulnerabilities follow
+[SECURITY.md](../SECURITY.md) and should not expose sensitive details through a
+public tag or task.
 
-Suspected vulnerabilities are reported privately according to
-[SECURITY.md](../SECURITY.md), not classified with a public `security` label.
-After coordinated disclosure, classify public follow-up work by its deliverable.
+## Priority tags
 
-## Priority
+Every actionable task should have exactly one:
 
-Every actionable open ticket has one priority value:
-
-| Value | Meaning |
+| Tag | Meaning |
 | --- | --- |
-| `P0` | Active incident, severe security exposure, data loss, or a broadly unusable product. Interrupt normal work. |
-| `P1` | Important correctness, security, or reliability work. Do next. |
-| `P2` | Meaningful planned work. Schedule normally. |
+| `P0` | Active incident, severe exposure, data loss, or broadly unusable product. |
+| `P1` | Important correctness, security, or reliability work that should be next. |
+| `P2` | Meaningful planned work. |
 | `P3` | Valid low-impact or opportunistic work. |
 
-Priority ranks work the project intends to do. Leave it unset for rejected
-work. Implementation size does not determine priority.
+Priority reflects impact and urgency, not implementation size. Leave it unset
+for work that should be rejected.
 
-This repository stores priority in the Project `Priority` field. The
-classification workflow sets it from evidence about impact, likelihood,
-affected scope, and urgency. A human may change it.
+The scheduled classifier validates existing tags, removes conflicting values,
+and applies only classification changes. It does not create tags, edit task
+content, move sections, or complete tasks.
 
-## Status
+## Compatibility note
 
-Status owns the delivery lifecycle:
-
-1. `Ready For Spec`
-2. `Creating Spec`
-3. `Ready To Implement`
-4. `Implementing`
-5. `Reviewing`
-6. `Done`
-
-Use the issue discussion and close reason for rejected, duplicate, invalid,
-superseded, or missing-information outcomes. Record risk, dependencies,
-verification requirements, and unresolved decisions in the ticket
-specification rather than adding more labels or fields.
-
-This repository stores lifecycle status in the Project `Status` field, but
-Factory does not poll that field. Adding `factory:ready-for-spec` or
-`factory:ready-to-implement` to an open issue authorizes the corresponding
-workflow. Each workflow initializes missing Project tracking when necessary,
-moves the Project status forward, and then removes its authorization label so
-the same trigger cannot refire.
-
-## Automated classification
-
-The scheduled `classify-tickets` workflow reviews every open issue. It:
-
-- reads `.factory/tickets.toml`;
-- normalizes the issue to exactly one configured type value;
-- sets exactly one configured priority value for actionable work;
-- removes conflicting values from the same dimension;
-- leaves status, issue content, and issue state unchanged.
-
-The workflow treats issue content as untrusted evidence. It inspects the
-repository and linked work before changing classification, and it makes no
-change when the existing classification is correct.
-
-## Storage backends
-
-Use `storage = "project_field"` when the ticket system supports writable
-single-select fields. Configure `project_owner`, `project_number`, and `field`
-in that section.
-
-Use `storage = "labels"` when it does not. In that mode, the values in the
-section are the exact label names. The workflow replaces conflicting labels
-within that dimension.
-
-Configure the source to read issue state and labels, and give each source
-trigger an explicit authorization label. Lifecycle status may still use a
-Project field because workflows update it only when they already have work;
-the high-frequency polling path remains the simple GitHub Issues query.
-
-The workflow must not invent fields, options, statuses, or labels. Missing
-configured values are configuration errors: report them and make no partial
-changes. A repository may use different storage backends for type, priority,
-and status.
+`.flashy-factory/tickets.toml` is retained from the upstream GitHub Project workflow
+for existing installations and examples. The Asana workflows do not read it;
+the Asana project sections and tags described here are the source of truth.

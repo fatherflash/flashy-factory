@@ -35,7 +35,8 @@ fn jira_adapter_builds_exact_jql_and_normalizes_issues() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/jira");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/jira");
     let output = Command::new(adapter)
         .args([
             "--project",
@@ -78,7 +79,8 @@ fn jira_adapter_fails_instead_of_silently_truncating_work() {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let adapter = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".factory/sources/jira");
+    let adapter =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".flashy-factory/sources/jira");
     let output = Command::new(adapter)
         .args(["--project", "SPS", "--state", "Ready To Implement"])
         .env("PATH", path)

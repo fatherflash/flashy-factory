@@ -42,7 +42,7 @@ impl Fixture {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.repository.join(".factory/config.toml")
+        self.repository.join(".flashy-factory/config.toml")
     }
 
     fn workspace(&self) -> PathBuf {
@@ -56,7 +56,7 @@ impl Fixture {
     }
 
     fn workflows(&self) -> PathBuf {
-        self.repository.join(".factory/workflows")
+        self.repository.join(".flashy-factory/workflows")
     }
 
     fn previous_data_home(&self) -> PathBuf {
@@ -122,7 +122,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("sandbox = \"worktree\""));
     assert!(config.contains("runtime = \"codex\""));
     assert!(config.contains("[source]"));
-    assert!(config.contains("\".factory/sources/github\""));
+    assert!(config.contains("\".flashy-factory/sources/asana\""));
+    assert!(config.contains("\"--max-results\""));
+    assert!(config.contains("\"Ready For Spec\""));
+    assert!(config.contains("\"Ready To Implement\""));
     assert!(!config.contains("--project-owner"));
     assert!(!config.contains("--project-number"));
     assert!(!config.contains("--trusted-user"));
@@ -131,9 +134,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("[trigger.triage]"));
     assert!(config.contains("[trigger.implement]"));
     assert!(config.contains("[trigger.bug-finder]"));
-    assert!(config.contains("workflow = \".factory/workflows/triage.md\""));
-    assert!(config.contains("workflow = \".factory/workflows/implement.md\""));
-    assert!(config.contains("workflow = \".factory/workflows/bug-finder.md\""));
+    assert!(config.contains("workflow = \".flashy-factory/workflows/triage.md\""));
+    assert!(config.contains("workflow = \".flashy-factory/workflows/implement.md\""));
+    assert!(config.contains("workflow = \".flashy-factory/workflows/bug-finder.md\""));
     assert!(config.contains("schedule = \"0 9 * * 1\""));
     assert!(!config.contains("[source.states]"));
     assert!(!config.contains("[github]"));
@@ -141,23 +144,29 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(!config.contains("workspace_root"));
     assert!(fixture.workspace().is_dir());
     assert!(fixture.workflows().is_dir());
+    assert!(!fixture.repository.join(".factory").exists());
     assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 3);
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("triage.md")).unwrap(),
-        include_str!("../.factory/workflows/triage.md")
+        include_str!("../.flashy-factory/workflows/triage.md")
     );
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("implement.md")).unwrap(),
-        include_str!("../.factory/workflows/implement.md")
+        include_str!("../.flashy-factory/workflows/implement.md")
     );
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("bug-finder.md")).unwrap(),
-        include_str!("../.factory/workflows/bug-finder.md")
+        include_str!("../.flashy-factory/workflows/bug-finder.md")
     );
-    let source = fixture.repository.join(".factory/sources/github");
+    let source = fixture.repository.join(".flashy-factory/sources/asana");
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
-        include_str!("../.factory/sources/github")
+        include_str!("../.flashy-factory/sources/asana")
+    );
+    let client = fixture.repository.join(".flashy-factory/clients/asana");
+    assert_eq!(
+        fs::read_to_string(&client).unwrap(),
+        include_str!("../.flashy-factory/clients/asana")
     );
     #[cfg(unix)]
     {
@@ -166,8 +175,17 @@ fn init_creates_complete_repository_factory_without_overwriting() {
             fs::metadata(source).unwrap().permissions().mode() & 0o111,
             0
         );
+        assert_ne!(
+            fs::metadata(client).unwrap().permissions().mode() & 0o111,
+            0
+        );
     }
-    assert!(!fixture.repository.join(".factory/Dockerfile").exists());
+    assert!(
+        !fixture
+            .repository
+            .join(".flashy-factory/Dockerfile")
+            .exists()
+    );
     assert!(!fixture.repository.join(".gh-calls").exists());
 
     fixture
@@ -180,7 +198,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
 }
 
 #[test]
-fn init_uses_dot_factory_as_the_default_data_home() {
+fn init_uses_dot_flashy_factory_as_the_default_data_home() {
     let fixture = Fixture::new();
 
     fixture
@@ -191,13 +209,169 @@ fn init_uses_dot_factory_as_the_default_data_home() {
         .assert()
         .success();
 
-    let data_home = fixture.home.join(".factory");
+    let data_home = fixture.home.join(".flashy-factory");
     let state_directories = fs::read_dir(&data_home)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
     assert_eq!(state_directories.len(), 1);
     assert!(state_directories[0].join("worktrees").is_dir());
+}
+
+#[test]
+fn init_and_validate_support_an_existing_legacy_repository_layout() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
+    let preferred = fixture.repository.join(".flashy-factory");
+    let legacy = fixture.repository.join(".factory");
+    fs::rename(&preferred, &legacy).unwrap();
+    let config_path = legacy.join("config.toml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace(".flashy-factory", ".factory");
+    fs::write(&config_path, config).unwrap();
+
+    fixture
+        .command()
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".factory/config.toml"))
+        .stdout(predicate::str::contains("unchanged:"));
+    fixture.command().arg("tasks").assert().success();
+
+    assert!(config_path.is_file());
+    assert!(!preferred.exists());
+}
+
+#[test]
+fn init_refuses_ambiguous_branded_and_legacy_configurations() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+    let legacy = fixture.repository.join(".factory");
+    fs::create_dir(&legacy).unwrap();
+    fs::copy(fixture.config_path(), legacy.join("config.toml")).unwrap();
+
+    fixture
+        .command()
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("both"))
+        .stderr(predicate::str::contains(".flashy-factory/config.toml"))
+        .stderr(predicate::str::contains(".factory/config.toml"));
+    fixture
+        .command()
+        .arg("validate")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ambiguous"));
+    fixture
+        .command()
+        .args(["validate", "--config", ".factory/config.toml"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("both"));
+}
+
+#[test]
+fn flashy_factory_data_home_environment_variable_is_supported() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .env("FLASHY_FACTORY_DATA_HOME", &fixture.data_home)
+        .arg("init")
+        .assert()
+        .success();
+    assert!(fixture.workspace().is_dir());
+}
+
+#[test]
+fn conflicting_data_home_environment_variables_are_rejected() {
+    let fixture = Fixture::new();
+
+    fixture
+        .command()
+        .env(
+            "FLASHY_FACTORY_DATA_HOME",
+            fixture._temp.path().join("other-data"),
+        )
+        .arg("init")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("resolve to different directories"));
+}
+
+#[test]
+fn default_data_home_reuses_an_existing_legacy_repository_ledger() {
+    let fixture = Fixture::new();
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+
+    let preferred_root = fixture.home.join(".flashy-factory");
+    let preferred_state = fs::read_dir(&preferred_root)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let state_name = preferred_state.file_name().unwrap().to_owned();
+    let legacy_root = fixture.home.join(".factory");
+    fs::rename(&preferred_root, &legacy_root).unwrap();
+    drop(Ledger::open_in(&legacy_root.join(&state_name)).unwrap());
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .args(["tasks"])
+        .assert()
+        .success();
+    assert!(!preferred_root.exists());
+    assert!(
+        legacy_root
+            .join(state_name)
+            .join("factory.sqlite3")
+            .is_file()
+    );
+}
+
+#[test]
+fn default_data_home_refuses_split_branded_and_legacy_ledgers() {
+    let fixture = Fixture::new();
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .arg("init")
+        .assert()
+        .success();
+
+    let preferred_root = fixture.home.join(".flashy-factory");
+    let state_name = fs::read_dir(&preferred_root)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .file_name();
+    let preferred_state = preferred_root.join(&state_name);
+    let legacy_state = fixture.home.join(".factory").join(state_name);
+    drop(Ledger::open_in(&preferred_state).unwrap());
+    drop(Ledger::open_in(&legacy_state).unwrap());
+
+    fixture
+        .command()
+        .env_remove("FACTORY_DATA_HOME")
+        .args(["tasks"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("both"))
+        .stderr(predicate::str::contains("split durable work"));
 }
 
 #[test]
@@ -225,11 +399,11 @@ fn init_refuses_to_abandon_state_at_the_previous_default() {
         )
         .unwrap();
     drop(previous_ledger);
-    let new_state_directory = fixture
+    let legacy_state_directory = fixture
         .home
         .join(".factory")
         .join(previous_state_directory.file_name().unwrap());
-    drop(Ledger::open_in(&new_state_directory).unwrap());
+    drop(Ledger::open_in(&legacy_state_directory).unwrap());
 
     fixture
         .command()
@@ -270,7 +444,7 @@ fn run_refuses_to_overlap_a_global_ledger() {
     let fixture = Fixture::new();
     fixture.command().arg("init").assert().success();
 
-    let global_database = fixture.home.join(".factory/factory.sqlite3");
+    let global_database = fixture.home.join(".flashy-factory/factory.sqlite3");
     let mut global_ledger = Ledger::open(&global_database).unwrap();
     global_ledger
         .enqueue(
@@ -329,7 +503,12 @@ fn init_docker_sandbox_mode_creates_worker_configuration() {
     assert!(config.contains("memory = \"8g\""));
     assert!(config.contains("cpus = 4"));
     assert!(!config.contains("pids ="));
-    assert!(!fixture.repository.join(".factory/Dockerfile").exists());
+    assert!(
+        !fixture
+            .repository
+            .join(".flashy-factory/Dockerfile")
+            .exists()
+    );
 }
 
 #[test]
@@ -352,7 +531,7 @@ fn check_reports_missing_resources_without_writes() {
 
     assert!(!fixture.config_path().exists());
     assert!(!fixture.data_home.exists());
-    assert!(!fixture.repository.join(".factory").exists());
+    assert!(!fixture.repository.join(".flashy-factory").exists());
 }
 
 #[test]
@@ -377,7 +556,7 @@ fn init_preserves_existing_default_assets_byte_for_byte() {
     let triage = fixture.workflows().join("triage.md");
     let implement = fixture.workflows().join("implement.md");
     let bug_finder = fixture.workflows().join("bug-finder.md");
-    let dockerfile = fixture.repository.join(".factory/Dockerfile");
+    let dockerfile = fixture.repository.join(".flashy-factory/Dockerfile");
     fs::write(&triage, "custom triage\n").unwrap();
     fs::write(&implement, "custom implementation\n").unwrap();
     fs::write(&bug_finder, "custom bug finder\n").unwrap();
@@ -421,7 +600,12 @@ fn init_rejects_symlinked_default_asset_without_touching_target() {
     assert!(!fixture.config_path().exists());
     assert!(!fixture.workflows().join("implement.md").exists());
     assert!(!fixture.workflows().join("bug-finder.md").exists());
-    assert!(!fixture.repository.join(".factory/Dockerfile").exists());
+    assert!(
+        !fixture
+            .repository
+            .join(".flashy-factory/Dockerfile")
+            .exists()
+    );
 }
 
 #[test]
@@ -489,7 +673,7 @@ fn init_rejects_a_symlinked_factory_directory() {
     let fixture = Fixture::new();
     let outside = fixture._temp.path().join("outside");
     fs::create_dir(&outside).unwrap();
-    symlink(&outside, fixture.repository.join(".factory")).unwrap();
+    symlink(&outside, fixture.repository.join(".flashy-factory")).unwrap();
 
     fixture
         .command()
@@ -508,7 +692,7 @@ fn init_resolves_symlinked_config_ancestors_before_writes() {
     let fixture = Fixture::new();
     let state = fixture._temp.path().join("factory-state");
     fs::create_dir(&state).unwrap();
-    symlink(&state, fixture.repository.join(".factory")).unwrap();
+    symlink(&state, fixture.repository.join(".flashy-factory")).unwrap();
 
     fixture
         .command()
@@ -538,7 +722,11 @@ fn init_targets_the_selected_repository_only() {
         .success();
 
     assert!(!fixture.config_path().exists());
-    assert!(nested_repository.join(".factory/config.toml").is_file());
+    assert!(
+        nested_repository
+            .join(".flashy-factory/config.toml")
+            .is_file()
+    );
 }
 
 #[test]

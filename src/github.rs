@@ -571,7 +571,7 @@ impl GitHubClient {
                 workflow_hash,
             )? != content_hash
         {
-            bail!("issue changed concurrently while Factory claimed its approval");
+            bail!("issue changed concurrently while Flashy Factory claimed its approval");
         }
         let timeline = self
             .issue_timeline(repository, &task.repository, issue_number, cancellation)

@@ -8,12 +8,16 @@ use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::config::{Config, ExecutionMode, repository_remote_identity};
+use crate::config::{
+    CONFIG_DIRECTORY, Config, ExecutionMode, LEGACY_CONFIG_DIRECTORY, repository_config_path,
+    repository_remote_identity,
+};
 
-const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage.md");
-const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement.md");
-const BUG_FINDER_WORKFLOW: &str = include_str!("../.factory/workflows/bug-finder.md");
-const GITHUB_SOURCE: &str = include_str!("../.factory/sources/github");
+const TRIAGE_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/triage.md");
+const IMPLEMENT_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/implement.md");
+const BUG_FINDER_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/bug-finder.md");
+const ASANA_CLIENT: &str = include_str!("../.flashy-factory/clients/asana");
+const ASANA_SOURCE: &str = include_str!("../.flashy-factory/sources/asana");
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
@@ -80,7 +84,7 @@ impl fmt::Display for InitReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             formatter,
-            "Factory initialization for {}",
+            "Flashy Factory initialization for {}",
             self.repository.display()
         )?;
         for resource in &self.resources {
@@ -100,17 +104,19 @@ impl fmt::Display for InitReport {
             if self.exit_code() == 0 {
                 writeln!(
                     formatter,
-                    "Factory setup is complete; no changes were made."
+                    "Flashy Factory setup is complete; no changes were made."
                 )
             } else {
                 writeln!(
                     formatter,
-                    "Factory setup is incomplete; run factory init to apply these changes."
+                    "Flashy Factory setup is incomplete; run factory init to apply these changes."
                 )
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            writeln!(formatter, "  edit .factory/config.toml for your Project")?;
+            writeln!(formatter, "  export ASANA_ACCESS_TOKEN=...")?;
+            writeln!(formatter, "  export ASANA_PROJECT_GID=...")?;
+            writeln!(formatter, "  export ASANA_WORKSPACE_GID=...")?;
             if self.execution_mode == ExecutionMode::DockerSandbox {
                 writeln!(formatter, "  sbx login")?;
                 writeln!(formatter, "  sbx secret set -g openai --oauth")?;
@@ -121,7 +127,7 @@ impl fmt::Display for InitReport {
         } else {
             writeln!(
                 formatter,
-                "Factory initialization stopped after a failed resource; fix the error and retry."
+                "Flashy Factory initialization stopped after a failed resource; fix the error and retry."
             )
         }
     }
@@ -135,7 +141,7 @@ struct DirectoryPlan {
 struct FilePlan {
     path: PathBuf,
     action: PlannedAction,
-    contents: &'static str,
+    contents: String,
     detail: &'static str,
     executable: bool,
 }
@@ -151,9 +157,14 @@ struct ConfigPlan {
 
 pub fn initialize(options: InitOptions) -> Result<InitReport> {
     let repository = discover_repository(&options.repository)?;
-    let workflows = plan_workflow_directory(&repository)?;
-    let config = plan_config(&options.config_path, &repository, options.execution_mode)?;
-    let assets = plan_default_assets(&repository)?;
+    let config_directory = resolve_init_config_directory(&repository, &options.config_path)?;
+    let workflows = plan_workflow_directory(&config_directory)?;
+    let config = plan_config(
+        &config_directory.join("config.toml"),
+        &repository,
+        options.execution_mode,
+    )?;
+    let assets = plan_default_assets(&config_directory)?;
 
     if options.check {
         return Ok(InitReport {
@@ -384,10 +395,46 @@ fn git_output(repository: &Path, arguments: &[&str]) -> Result<String> {
     String::from_utf8(output.stdout).context("git output was not valid UTF-8")
 }
 
-fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
-    let factory_directory = repository.join(".factory");
-    validate_optional_directory(&factory_directory)?;
-    let path = factory_directory.join("workflows");
+fn resolve_init_config_directory(repository: &Path, requested: &Path) -> Result<PathBuf> {
+    let requested = absolute_path(requested)?;
+    let preferred_config = repository_config_path(repository);
+    let legacy_directory = repository.join(LEGACY_CONFIG_DIRECTORY);
+    let legacy_config = legacy_directory.join("config.toml");
+    if requested != preferred_config && requested != legacy_config {
+        bail!(
+            "repository configuration must be {} (or legacy {}); got {}",
+            preferred_config.display(),
+            legacy_config.display(),
+            requested.display()
+        );
+    }
+
+    let preferred_directory = repository.join(CONFIG_DIRECTORY);
+    let preferred_config_exists = preferred_config.exists();
+    let legacy_config_exists = legacy_config.exists();
+    if preferred_config_exists && legacy_config_exists {
+        bail!(
+            "both {} and {} exist; keep one repository configuration to avoid ambiguous Flashy Factory state",
+            preferred_config.display(),
+            legacy_config.display()
+        );
+    }
+    if preferred_config_exists {
+        return Ok(preferred_directory);
+    }
+    if legacy_config_exists {
+        return Ok(legacy_directory);
+    }
+    if preferred_directory.exists() || !legacy_directory.exists() {
+        Ok(preferred_directory)
+    } else {
+        Ok(legacy_directory)
+    }
+}
+
+fn plan_workflow_directory(config_directory: &Path) -> Result<DirectoryPlan> {
+    validate_optional_directory(config_directory)?;
+    let path = config_directory.join("workflows");
     validate_optional_directory(&path)?;
     Ok(DirectoryPlan {
         action: if path.exists() {
@@ -399,48 +446,59 @@ fn plan_workflow_directory(repository: &Path) -> Result<DirectoryPlan> {
     })
 }
 
-fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
-    let factory = repository.join(".factory");
+fn plan_default_assets(config_directory: &Path) -> Result<Vec<FilePlan>> {
+    let config_directory_name = config_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("configuration directory has no valid name")?;
+    let adapt = |contents: &str| {
+        if config_directory_name == LEGACY_CONFIG_DIRECTORY {
+            contents.replace(CONFIG_DIRECTORY, LEGACY_CONFIG_DIRECTORY)
+        } else {
+            contents.to_owned()
+        }
+    };
     let assets = vec![
         plan_file(
-            factory.join("workflows/triage.md"),
-            TRIAGE_WORKFLOW,
+            config_directory.join("workflows/triage.md"),
+            adapt(TRIAGE_WORKFLOW),
             "triage workflow",
         )?,
         plan_executable_file(
-            factory.join("sources/github"),
-            GITHUB_SOURCE,
-            "GitHub source adapter",
+            config_directory.join("clients/asana"),
+            adapt(ASANA_CLIENT),
+            "Asana agent client",
+        )?,
+        plan_executable_file(
+            config_directory.join("sources/asana"),
+            adapt(ASANA_SOURCE),
+            "Asana source adapter",
         )?,
         plan_file(
-            factory.join("workflows/implement.md"),
-            IMPLEMENT_WORKFLOW,
+            config_directory.join("workflows/implement.md"),
+            adapt(IMPLEMENT_WORKFLOW),
             "implementation workflow",
         )?,
         plan_file(
-            factory.join("workflows/bug-finder.md"),
-            BUG_FINDER_WORKFLOW,
+            config_directory.join("workflows/bug-finder.md"),
+            adapt(BUG_FINDER_WORKFLOW),
             "bug finder workflow",
         )?,
     ];
     Ok(assets)
 }
 
-fn plan_file(path: PathBuf, contents: &'static str, detail: &'static str) -> Result<FilePlan> {
+fn plan_file(path: PathBuf, contents: String, detail: &'static str) -> Result<FilePlan> {
     plan_file_with_mode(path, contents, detail, false)
 }
 
-fn plan_executable_file(
-    path: PathBuf,
-    contents: &'static str,
-    detail: &'static str,
-) -> Result<FilePlan> {
+fn plan_executable_file(path: PathBuf, contents: String, detail: &'static str) -> Result<FilePlan> {
     plan_file_with_mode(path, contents, detail, true)
 }
 
 fn plan_file_with_mode(
     path: PathBuf,
-    contents: &'static str,
+    contents: String,
     detail: &'static str,
     executable: bool,
 ) -> Result<FilePlan> {
@@ -483,7 +541,9 @@ fn plan_config(
     requested_mode: ExecutionMode,
 ) -> Result<ConfigPlan> {
     let path = absolute_path(path)?;
-    let expected = repository.join(".factory/config.toml");
+    let preferred = repository.join(CONFIG_DIRECTORY).join("config.toml");
+    let legacy = repository.join(LEGACY_CONFIG_DIRECTORY).join("config.toml");
+    let expected = if path == legacy { legacy } else { preferred };
     if path != expected {
         bail!(
             "repository configuration must be {}; got {}",
@@ -514,7 +574,12 @@ fn plan_config(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             repository_remote_identity(repository)
                 .context("repository has no resolvable GitHub remote")?;
-            let candidate = default_config(requested_mode);
+            let config_directory = path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .context("repository configuration directory has no valid name")?;
+            let candidate = default_config(requested_mode, config_directory);
             let validated = Config::validate_candidate(&candidate, repository)
                 .context("generated configuration is invalid")?;
             let workspace = validated.workspace_root;
@@ -547,7 +612,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn default_config(execution_mode: ExecutionMode) -> String {
+fn default_config(execution_mode: ExecutionMode, config_directory: &str) -> String {
     let mut document = DocumentMut::new();
     document["version"] = value(1);
     document["poll_every"] = value("30s");
@@ -563,27 +628,29 @@ fn default_config(execution_mode: ExecutionMode) -> String {
         document["worker"]["cpus"] = value(4);
     }
     document["source"] = Item::Table(Table::new());
-    document["source"]["command"] =
-        toml_edit::value(toml_edit::Array::from_iter([".factory/sources/github"]));
+    document["source"]["command"] = toml_edit::value(toml_edit::Array::from_iter([
+        &format!("{config_directory}/sources/asana"),
+        "--max-results",
+        "200",
+    ]));
     document["trigger"] = Item::Table(Table::new());
     document["trigger"]["triage"] = Item::Table(Table::new());
     document["trigger"]["triage"]["type"] = value("source");
-    document["trigger"]["triage"]["state"] = value("open");
-    document["trigger"]["triage"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-for-spec"]));
-    document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage.md");
+    document["trigger"]["triage"]["state"] = value("Ready For Spec");
+    document["trigger"]["triage"]["workflow"] =
+        value(format!("{config_directory}/workflows/triage.md"));
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
-    document["trigger"]["implement"]["state"] = value("open");
-    document["trigger"]["implement"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-to-implement"]));
-    document["trigger"]["implement"]["workflow"] = value(".factory/workflows/implement.md");
+    document["trigger"]["implement"]["state"] = value("Ready To Implement");
+    document["trigger"]["implement"]["workflow"] =
+        value(format!("{config_directory}/workflows/implement.md"));
     document["trigger"]["implement"]["timeout"] = value("4h");
     document["trigger"]["bug-finder"] = Item::Table(Table::new());
     document["trigger"]["bug-finder"]["type"] = value("schedule");
     document["trigger"]["bug-finder"]["schedule"] = value("0 9 * * 1");
     document["trigger"]["bug-finder"]["timezone"] = value("Europe/London");
-    document["trigger"]["bug-finder"]["workflow"] = value(".factory/workflows/bug-finder.md");
+    document["trigger"]["bug-finder"]["workflow"] =
+        value(format!("{config_directory}/workflows/bug-finder.md"));
     document.to_string()
 }
 

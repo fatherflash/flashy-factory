@@ -1,8 +1,8 @@
-# Operate Factory v1
+# Operate Flashy Factory v1
 
-Factory is always watching, not always spending tokens. `factory run` polls one
-configured GitHub source and starts a worker only when a configured status,
-label, or schedule trigger matches.
+Flashy Factory is always watching, not always spending tokens. `factory run`
+polls the configured Asana project and starts a worker only when a configured
+section, tag, or schedule trigger matches.
 
 ## Normal operation
 
@@ -16,7 +16,7 @@ factory run
 Startup validates the configured execution backend before claiming work.
 Lifecycle events report polls, claims, worker delegation, safe Codex progress,
 and terminal outcomes. Progress distinguishes work such as reasoning, commands,
-file changes, web searches, and subtask coordination. Factory deliberately does
+file changes, web searches, and subtask coordination. Flashy Factory deliberately does
 not print prompts, reasoning content, command arguments, or raw tool output.
 Use the supported inspection commands instead of reading SQLite directly:
 
@@ -31,16 +31,28 @@ another task while the issue remains in the same status or label entry. Leaving
 and re-entering creates one new task-scoped sandbox. The workflow tells the
 agent to find and continue an existing branch or pull request when appropriate.
 
-Factory stores durable state and managed worktrees below
-`~/.factory/<repository-hash>/`. Set `FACTORY_DATA_HOME` to override the
-`~/.factory` root. When upgrading an installation that already has state below
-the previous platform data directory, Factory refuses to select the new default
-while the previous ledger remains and reports the `FACTORY_DATA_HOME` value that
-continues using that state. Factory also refuses to start while the older global
-`~/.factory/factory.sqlite3` ledger remains, preventing overlap with work owned
-by an old Factory process regardless of the `FACTORY_DATA_HOME` setting. These
-overlap guards run when `factory run` starts; inspection and cleanup commands
-remain available.
+Flashy Factory stores durable state and managed worktrees below
+`~/.flashy-factory/<repository-hash>/`. Set `FLASHY_FACTORY_DATA_HOME` to
+override that root. The older `FACTORY_DATA_HOME` name remains an alias; if both
+variables are set they must resolve to the same directory.
+
+On upgrade, a repository that only has `.factory/config.toml` continues to use
+that configuration and its `.factory/workflows`, clients, and sources in place.
+`factory init` does not create a competing branded directory. New repositories
+use `.flashy-factory`. If both config files exist, Flashy Factory stops and asks
+you to keep one, rather than guessing.
+
+The same no-data-loss rule applies to durable state. When the new default has no
+ledger but `~/.factory/<repository-hash>/factory.sqlite3` exists, Flashy Factory
+continues using the legacy repository directory. If ledgers exist under both
+roots, it stops to prevent split durable work. Flashy Factory also refuses to
+select a new default while a still older platform-data ledger remains, and
+reports the `FLASHY_FACTORY_DATA_HOME` value that keeps using it.
+
+The unscoped ledgers `~/.flashy-factory/factory.sqlite3` and legacy
+`~/.factory/factory.sqlite3` both block startup because queued or running work
+owned by an old process could overlap. These guards run when `factory run`
+starts; inspection and cleanup commands remain available.
 
 ## Fleet operation
 
@@ -53,13 +65,13 @@ factory run --fleet ~/.config/factory/fleet.toml
 
 Fleet configuration is read once at startup. Adding, removing, editing,
 enabling, or disabling a repository has no effect on the running process.
-Restart Factory to apply the changed file. There is no hot reload and no fleet
+Restart Flashy Factory to apply the changed file. There is no hot reload and no fleet
 `version` field. While that supervisor process is live, fleet inspection and
 mutation commands use its durable fleet and repository configuration startup
 snapshot, even if either file has since been edited. After the process stops,
 commands load the current files.
 
-Each `repository.name` is a pinned GitHub `owner/name` identity. Factory
+Each `repository.name` is a pinned GitHub `owner/name` identity. Flashy Factory
 lowercases it for durable identity, verifies the canonical primary checkout and
 its `origin`, and never substitutes another remote or checkout for existing
 state. Relative repository paths resolve from the fleet file's parent
@@ -70,7 +82,7 @@ The initial supported envelope is 20 enabled repositories, three
 source-triggered workflows per repository, and polling intervals of at least
 60 seconds. `max_concurrent` limits the fleet. An optional repository
 `max_concurrent` combines with its repository worker limit by taking the lower
-value. Factory admits eligible repositories round-robin, runs at most two host
+value. Flashy Factory admits eligible repositories round-robin, runs at most two host
 source queries concurrently, deterministically staggers polls, and shares a
 GitHub rate-limit pause across repositories using the same credential.
 
@@ -105,7 +117,7 @@ add `--all` to include cleaned records.
 Read-only task and run lists aggregate every configured repository unless
 `--repository owner/name` filters them. A single `inspect RUN_ID` may omit the
 selector only when that numeric ID exists in one configured repository. If the
-same ID exists in more than one ledger, Factory rejects the request and names
+same ID exists in more than one ledger, Flashy Factory rejects the request and names
 the required selector.
 
 Cancellation and cleanup are mutations, so fleet mode always requires the
@@ -120,7 +132,7 @@ factory cleanup --fleet ~/.config/factory/fleet.toml \
   --repository acme/payments RUN_ID --confirm
 ```
 
-Factory resolves the selector before opening a ledger, verifies the run, task,
+Flashy Factory resolves the selector before opening a ledger, verifies the run, task,
 and workspace ownership, and refuses unknown or inconsistent ownership without
 mutation. This is required because repository ledgers can both contain run
 `42`.
@@ -142,22 +154,22 @@ checkout relocation, and state migration are not supported.
 
 ## Worker boundary
 
-Worktree mode runs the host Codex CLI in a Factory-owned Git worktree. It is
+Worktree mode runs the host Codex CLI in a Flashy Factory-owned Git worktree. It is
 fast and uses the host user credentials and process boundary. It is not a
 security sandbox and should be used only for trusted local work.
 
 Docker Sandbox mode gives every task a disposable microVM and private in-VM Git
-clone. Its Factory-owned host source clone is read-only to the VM. The canonical
-checkout, Factory database, host Docker daemon, host credentials, and unrelated
+clone. Its Flashy Factory-owned host source clone is read-only to the VM. The canonical
+checkout, Flashy Factory database, host Docker daemon, host credentials, and unrelated
 repositories are outside the VM boundary.
 
 The worker has full privileges inside the microVM, including its own Docker
 daemon, while Docker Sandboxes applies the hypervisor and network boundaries.
 Codex and GitHub credentials are injected by a host proxy and their raw values
-do not enter the VM. Factory records the sandbox name, template, `sbx` version,
-and limits before creation. Before removal, Factory snapshots tracked and
+do not enter the VM. Flashy Factory records the sandbox name, template, `sbx` version,
+and limits before creation. Before removal, Flashy Factory snapshots tracked and
 untracked changes in the VM and fetches that commit into trusted host Git
-metadata. If the handoff fails, Factory stops and retains the sandbox.
+metadata. If the handoff fails, Flashy Factory stops and retains the sandbox.
 
 Docker Sandboxes blocks network access unless policy allows it, but allowed
 services and Git remotes still create external effects. Treat all
@@ -191,7 +203,7 @@ factory cancel RUN_ID
 Ctrl-C stops new polling and claims, cancels active workers, records terminal
 outcomes, and leaves queued work durable. Worktree mode supervises the host
 process group. Docker Sandbox mode also reconciles durable sandbox ownership by
-its Factory instance name before stopping or removing a VM. It captures
+its Flashy Factory instance name before stopping or removing a VM. It captures
 recovered evidence, then permits bounded recovery. Repeated failure remains
 inspectable and never turns into an automatic merge.
 
@@ -224,7 +236,7 @@ factory reset --confirm
 Reset includes the current repository ledger and the older global ledger when
 it exists. Confirmation is refused while either ledger has queued or running
 work, a live daemon lease, an unremoved managed container, or retained workspace
-ownership. Stop Factory and use `factory cleanup RUN_ID --confirm` for retained
+ownership. Stop Flashy Factory and use `factory cleanup RUN_ID --confirm` for retained
 work before retrying.
 
 Reset removes only SQLite state. Repository configuration, workflows, branches,

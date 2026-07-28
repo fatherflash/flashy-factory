@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="940" viewBox="0 0 720 940" role="img" aria-labelledby="title desc">
   <title id="title">Example repository-owned ticket workflow</title>
-  <desc id="desc">A ticket moves from Ready For Spec to Creating Spec, then through human approval to Ready To Implement. An agent implements and proves the change before human review marks it done or sends feedback back for another implementation pass. These states are an example policy and are not built into Factory.</desc>
+  <desc id="desc">A ticket moves from Ready For Spec to Creating Spec, then through human approval to Ready To Implement. An agent implements and proves the change before human review marks it done or sends feedback back for another implementation pass. These states are an example policy and are not built into Flashy Factory.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
       <path d="M0 0 10 5 0 10z" fill="#888378"/>
@@ -68,5 +68,5 @@
   <path d="M48 676H80" fill="none" stroke="#6652b3" stroke-width="2.75" stroke-linecap="round" stroke-dasharray="7 8"/>
   <text class="text kicker" x="92" y="681" fill="#6652b3">REVIEW FEEDBACK → ANOTHER PASS</text>
 
-  <text class="text detail" x="360" y="902" text-anchor="middle">Example repository policy. Factory does not hard-code these states.</text>
+  <text class="text detail" x="360" y="902" text-anchor="middle">Example repository policy. Flashy Factory does not hard-code these states.</text>
 </svg>

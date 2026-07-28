@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
   <title id="title">Turning a vague ticket into executable work</title>
-  <desc id="desc">Factory triage inspects a vague ticket and the codebase, then either produces an executable task contract or routes the task to specification, clarification or waiting.</desc>
+  <desc id="desc">Flashy Factory triage inspects a vague ticket and the codebase, then either produces an executable task contract or routes the task to specification, clarification or waiting.</desc>
   <defs>
     <filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="7" stdDeviation="12" flood-color="#172033" flood-opacity=".08"/></filter>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#7D8AA5"/></marker>

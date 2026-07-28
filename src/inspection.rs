@@ -374,7 +374,7 @@ pub fn print_inspection(inspection: &RunInspection) {
         safe_text(inspection.run.base_sha.as_deref().unwrap_or("-"))
     );
     println!(
-        "Factory branch: {}",
+        "Flashy Factory branch: {}",
         safe_text(inspection.run.factory_branch.as_deref().unwrap_or("-"))
     );
     println!(

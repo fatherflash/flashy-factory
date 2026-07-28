@@ -17,7 +17,7 @@ impl Fixture {
         let temp_path = temp.path().canonicalize().unwrap();
         let repository = temp_path.join("repository");
         let data_home = temp_path.join("factory-data");
-        fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
+        fs::create_dir_all(repository.join(".flashy-factory/workflows")).unwrap();
         assert!(
             Command::new("git")
                 .args(["init", "--quiet"])
@@ -46,7 +46,7 @@ impl Fixture {
             .arg("init")
             .assert()
             .success();
-        fs::write(repository.join(".factory/config.toml"), config).unwrap();
+        fs::write(repository.join(".flashy-factory/config.toml"), config).unwrap();
         Self {
             _temp: temp,
             repository,
@@ -56,7 +56,7 @@ impl Fixture {
 
     fn config(&self) -> anyhow::Result<Config> {
         Config::load_with_data_home(
-            &self.repository.join(".factory/config.toml"),
+            &self.repository.join(".flashy-factory/config.toml"),
             &self.data_home,
         )
     }
@@ -133,11 +133,11 @@ fn catalog_display_groups_the_repository_and_aligns_workflows() {
 fn jira_example_uses_flat_executable_workflow_paths() {
     let config = include_str!("../examples/jira-config.toml").replace(
         r#"command = [
-  ".factory/sources/jira",
+  ".flashy-factory/sources/jira",
   "--project", "SPS",
   "--max-results", "100",
 ]"#,
-        r#"command = [".factory/sources/github"]"#,
+        r#"command = [".flashy-factory/sources/github"]"#,
     );
     let fixture = Fixture::new(&config);
     for name in ["triage", "implement"] {
@@ -146,7 +146,7 @@ fn jira_example_uses_flat_executable_workflow_paths() {
                 .join(format!("examples/jira-{name}.md")),
             fixture
                 .repository
-                .join(format!(".factory/workflows/jira-{name}.md")),
+                .join(format!(".flashy-factory/workflows/jira-{name}.md")),
         )
         .unwrap();
     }
@@ -164,19 +164,19 @@ fn loads_explicit_tagged_triggers_and_plain_workflows() {
         r#"[trigger.triage]
 type = "status"
 status = "Ready For Spec"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "label"
 label = "agent:ready"
-workflow = ".factory/workflows/implement.md"
+workflow = ".flashy-factory/workflows/implement.md"
 timeout = "45m"
 
 [trigger.maintenance]
 type = "schedule"
 schedule = "*/10 * * * *"
 timezone = "Europe/London"
-workflow = ".factory/workflows/maintenance.md"
+workflow = ".flashy-factory/workflows/maintenance.md"
 "#,
     );
     let fixture = Fixture::new(&config);
@@ -184,7 +184,7 @@ workflow = ".factory/workflows/maintenance.md"
         fs::write(
             fixture
                 .repository
-                .join(format!(".factory/workflows/{name}.md")),
+                .join(format!(".flashy-factory/workflows/{name}.md")),
             format!("Run the {name} workflow.\n"),
         )
         .unwrap();
@@ -217,13 +217,25 @@ workflow = ".factory/workflows/maintenance.md"
 }
 
 #[test]
+fn asana_example_resolves_the_checked_in_workflows() {
+    let fixture = Fixture::new(include_str!("../examples/asana-config.toml"));
+    let config = fixture.config().unwrap();
+    let catalog = WorkflowCatalog::load(&config).unwrap();
+    assert!(catalog.entries.iter().all(|entry| entry.errors.is_empty()));
+    assert_eq!(
+        config.source.unwrap().command,
+        vec![".flashy-factory/sources/asana", "--max-results", "200",]
+    );
+}
+
+#[test]
 fn rejects_mixed_trigger_fields() {
     let fixture = Fixture::new(&config_with(
         r#"[trigger.bad]
 type = "label"
 label = "agent:ready"
 status = "Ready"
-workflow = ".factory/workflows/bad.md"
+workflow = ".flashy-factory/workflows/bad.md"
 "#,
     ));
     let error = fixture.config().unwrap_err();
@@ -236,7 +248,7 @@ fn rejects_unsupported_runtime_and_source() {
         r#"[trigger.triage]
 type = "status"
 status = "Ready"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 "#,
     )
     .replace("runtime = \"codex\"", "runtime = \"claude\"");
@@ -256,18 +268,25 @@ fn catalog_rejects_frontmatter_and_missing_files() {
         r#"[trigger.triage]
 type = "status"
 status = "Ready"
-workflow = ".factory/workflows/triage.md"
+workflow = ".flashy-factory/workflows/triage.md"
 "#,
     ));
     fs::write(
-        fixture.repository.join(".factory/workflows/triage.md"),
+        fixture
+            .repository
+            .join(".flashy-factory/workflows/triage.md"),
         "+++\nlabel = \"old\"\n+++\nPrompt\n",
     )
     .unwrap();
     let catalog = WorkflowCatalog::load(&fixture.config().unwrap()).unwrap();
     assert!(catalog.validate_all().is_err());
 
-    fs::remove_file(fixture.repository.join(".factory/workflows/triage.md")).unwrap();
+    fs::remove_file(
+        fixture
+            .repository
+            .join(".flashy-factory/workflows/triage.md"),
+    )
+    .unwrap();
     let catalog = WorkflowCatalog::load(&fixture.config().unwrap()).unwrap();
     assert!(catalog.validate_all().is_err());
 }
