@@ -91,30 +91,146 @@ For the complete trust and isolation model, read the
 
 ## Get started
 
-Install Python 3, Rust, Git, the GitHub CLI, and the Codex CLI. Export the Asana
-project, workspace, and access-token variables described in the
-[Asana guide](docs/asana.md), then authenticate the host tools and install:
+Flashy Factory is a Rust CLI named `factory`. You can either work on Flashy
+Factory itself or install it and use it to manage another repository.
+
+### Prerequisites
+
+Install these tools on a Unix-like host:
+
+- Python 3
+- a current stable Rust toolchain
+- Git
+- the GitHub CLI
+- the Codex CLI
+
+Authenticate the tools that workers will use:
 
 ```sh
 gh auth login
 codex login
+```
+
+### Install Flashy Factory
+
+Clone this repository and install the CLI:
+
+```sh
+git clone https://github.com/fatherflash/flashy-factory.git
+cd flashy-factory
 cargo install --path . --locked
 ```
 
-From the repository Flashy Factory will manage:
+Confirm that the command is available:
 
 ```sh
+factory --help
+```
+
+### Initialize the repository to manage
+
+Change to the trusted repository where agents will work. Preview the files that
+initialization will create, then initialize it:
+
+```sh
+cd /path/to/repository
+factory init --check
 factory init
 ```
 
-Edit the generated configuration and workflows for your repository, then
-validate them and start Flashy Factory:
+Initialization creates the repository-owned configuration, Asana client and
+source adapter, and starter workflows:
+
+```text
+.flashy-factory/
+├── config.toml
+├── clients/
+│   └── asana
+├── sources/
+│   └── asana
+└── workflows/
+    ├── triage.md
+    ├── implement.md
+    └── bug-finder.md
+```
+
+Edit `.flashy-factory/config.toml` and the generated Markdown workflows for the
+repository. The default Asana workflow expects case-sensitive project sections
+similar to:
+
+```text
+Ready For Spec → Creating Spec → Awaiting Approval
+                                  ↓ human approval
+Ready To Implement → Implementing → Reviewing → Done
+```
+
+Section names are not built in. If your project uses different names, update
+the configuration and workflows together.
+
+### Connect Asana
+
+Make the non-secret project and workspace IDs available to the Flashy Factory
+process:
+
+```sh
+export ASANA_PROJECT_GID="your-project-gid"
+export ASANA_WORKSPACE_GID="your-workspace-gid"
+```
+
+The process also requires `ASANA_ACCESS_TOKEN`. Inject a dedicated, revocable
+token through an OS secret manager or service-manager environment rather than
+typing its value into an interactive shell. Do not commit the token or put it
+in `.env`, `.flashy-factory/config.toml`, workflow files, task descriptions, or
+shell history. The [Asana guide](docs/asana.md) explains project setup,
+permissions, and credential handling in detail.
+
+### Validate and start
+
+Validate the repository configuration and inspect the resolved workflows:
 
 ```sh
 factory validate
+factory workflows
+```
+
+Next, perform a safe one-shot poll:
+
+```sh
 factory run --once
+```
+
+This discovers and durably records eligible tasks but does not launch workers.
+After inspecting the result, start continuous supervision:
+
+```sh
 factory run
 ```
+
+Flashy Factory now polls the configured Asana project and launches a worker
+only when a task matches a configured trigger. Keep this process running under
+your preferred service manager for a persistent deployment.
+
+### Develop Flashy Factory
+
+To build and run the CLI directly from this repository:
+
+```sh
+cargo build --locked
+cargo run -- --help
+```
+
+Before submitting a change, run the project checks:
+
+```sh
+cargo fmt --all --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+```
+
+The CLI entry point is in `src/main.rs`. Core polling and supervision live in
+`src/daemon.rs`, agent execution in `src/execution.rs`, configuration in
+`src/config.rs`, source integration in `src/source.rs`, and integration tests
+in `tests/`.
 
 The [runnable guide](docs/local-v1.md) covers the complete configuration, source
 contract, first demonstration, two-repository fleet setup, and sandbox setup. The
