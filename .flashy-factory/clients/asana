@@ -240,10 +240,8 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
     section = resolve_section(client, project_gid, state)
     section_gid = require_gid("section.gid", section.get("gid"))
     tasks = client.paginate(
-        "/tasks",
+        f"/sections/{encoded_gid(section_gid)}/tasks",
         query={
-            "project": project_gid,
-            "section": section_gid,
             "completed_since": "now",
             "opt_fields": (
                 "gid,name,notes,completed,modified_at,permalink_url,"

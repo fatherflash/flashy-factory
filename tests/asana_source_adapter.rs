@@ -153,9 +153,13 @@ fn asana_adapter_discovers_exact_section_and_tag_matches() {
             .head
             .starts_with("GET /projects/project-1/sections?")
     );
-    assert!(requests[1].head.starts_with("GET /tasks?"));
-    assert!(requests[1].head.contains("project=project-1"));
-    assert!(requests[1].head.contains("section=section-1"));
+    assert!(
+        requests[1]
+            .head
+            .starts_with("GET /sections/section-1/tasks?")
+    );
+    assert!(!requests[1].head.contains("project="));
+    assert!(!requests[1].head.contains("section="));
     assert!(requests.iter().all(|request| {
         request
             .head
