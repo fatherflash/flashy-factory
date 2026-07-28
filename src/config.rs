@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::hash::encode_lower;
+use crate::repository::{RepositoryProvider, RepositoryRef};
 use crate::runtime::build_runtime;
 use crate::storage::DATABASE_NAME;
 
@@ -904,58 +905,12 @@ fn resolve_data_base(base: PathBuf) -> Result<PathBuf> {
 pub fn repository_remote_identity(repository: &Path) -> Result<String> {
     let origin = git_output(repository, &["config", "--get", "remote.origin.url"])
         .context("repository has no configured origin remote")?;
-    canonical_github_identity(origin.trim()).context("origin is not a supported GitHub remote")
-}
-
-fn canonical_github_identity(origin: &str) -> Result<String> {
-    let path = if let Some(path) = origin.strip_prefix("git@github.com:") {
-        path
-    } else if let Some(remainder) = origin.strip_prefix("https://") {
-        let (authority, path) = remainder
-            .split_once('/')
-            .context("GitHub HTTPS origin has no repository path")?;
-        let host = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host);
-        let host = host.split_once(':').map_or(host, |(host, _)| host);
-        if !host.eq_ignore_ascii_case("github.com") {
-            bail!("GitHub HTTPS origin has an unsupported host");
-        }
-        path
-    } else if let Some(remainder) = origin.strip_prefix("ssh://git@") {
-        let (authority, path) = remainder
-            .split_once('/')
-            .context("GitHub SSH origin has no repository path")?;
-        let host = authority
-            .split_once(':')
-            .map_or(authority, |(host, _)| host);
-        if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("ssh.github.com")
-        {
-            bail!("GitHub SSH origin has an unsupported host");
-        }
-        path
-    } else {
-        bail!("unsupported GitHub origin syntax");
-    };
-    let path = path.trim_end_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
-    let mut segments = path.split('/');
-    let owner = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .context("GitHub origin has no owner")?;
-    let repository = segments
-        .next()
-        .filter(|value| !value.is_empty())
-        .context("GitHub origin has no repository")?;
-    if segments.next().is_some() {
-        bail!("GitHub origin has an invalid repository path");
+    let repository_ref =
+        RepositoryRef::parse(origin.trim()).context("origin is not a supported GitHub remote")?;
+    if repository_ref.provider != RepositoryProvider::GitHub {
+        bail!("origin is not a supported GitHub remote");
     }
-    Ok(format!(
-        "{}/{}",
-        owner.to_ascii_lowercase(),
-        repository.to_ascii_lowercase()
-    ))
+    Ok(repository_ref.identity())
 }
 
 pub(crate) fn ensure_primary_checkout(repository: &Path) -> Result<()> {

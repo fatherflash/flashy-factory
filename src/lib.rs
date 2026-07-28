@@ -11,6 +11,7 @@ pub mod github;
 mod hash;
 pub mod init;
 pub mod inspection;
+pub mod repository;
 pub mod runtime;
 pub mod sandbox;
 pub mod source;
