@@ -309,7 +309,7 @@ pub fn activate_fleet(
     let _ = fs::remove_file(&state_path);
     let process_id = std::process::id();
     let process_identity = crate::runtime::process_identity(process_id)
-        .context("failed to resolve Factory supervisor process identity")?;
+        .context("failed to resolve Flashy Factory supervisor process identity")?;
     let manifest = ActiveFleetManifest {
         process_id,
         process_identity: process_identity.clone(),
@@ -409,7 +409,7 @@ fn active_fleet_state_path(path: &Path) -> Result<PathBuf> {
         Some(base) => current_dir.join(base),
         None => dirs::home_dir()
             .map(|home| home.join(".factory"))
-            .context("could not determine Factory data directory")?,
+            .context("could not determine Flashy Factory data directory")?,
     };
     Ok(base.join("fleets").join(format!("{}.json", &digest[..20])))
 }

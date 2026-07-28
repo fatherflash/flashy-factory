@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+"""Small, dependency-free Asana API client for Flashy Factory workflows."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+DEFAULT_API_BASE = "https://app.asana.com/api/1.0"
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_TEXT_BYTES = 256 * 1024
+GID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+class ClientError(Exception):
+    def __init__(
+        self, message: str, *, rate_limited: bool = False, retry_at: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.rate_limited = rate_limited
+        self.retry_at = retry_at
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> None:
+        return None
+
+
+def require_gid(name: str, value: str | None) -> str:
+    if not value or not GID_PATTERN.fullmatch(value):
+        raise ClientError(f"{name} must be a valid Asana GID")
+    return value
+
+
+def require_name(name: str, value: str) -> str:
+    if not value.strip() or len(value) > 200 or any(ord(char) < 32 for char in value):
+        raise ClientError(f"{name} must be 1-200 printable characters")
+    return value
+
+
+def read_text(path: str, field: str) -> str:
+    if path == "-":
+        value = sys.stdin.buffer.read(MAX_TEXT_BYTES + 1)
+    else:
+        try:
+            value = Path(path).read_bytes()
+        except OSError as error:
+            raise ClientError(f"failed to read {field} file: {error}") from error
+    if len(value) > MAX_TEXT_BYTES:
+        raise ClientError(f"{field} must not exceed {MAX_TEXT_BYTES} bytes")
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ClientError(f"{field} must be UTF-8") from error
+
+
+class AsanaClient:
+    def __init__(self) -> None:
+        token = os.environ.get("ASANA_ACCESS_TOKEN", "").strip()
+        if not token or any(char in token for char in "\r\n"):
+            raise ClientError("ASANA_ACCESS_TOKEN is required")
+        self.token = token
+        self.base_url = self._validated_base_url(
+            os.environ.get("ASANA_API_BASE_URL", DEFAULT_API_BASE)
+        )
+        self.opener = urllib.request.build_opener(NoRedirectHandler())
+
+    @staticmethod
+    def _validated_base_url(value: str) -> str:
+        parsed = urllib.parse.urlparse(value)
+        is_default_https = value.rstrip("/") == DEFAULT_API_BASE
+        is_test_loopback = (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            and os.environ.get("ASANA_ALLOW_INSECURE_LOCALHOST") == "1"
+        )
+        if not (is_default_https or is_test_loopback):
+            raise ClientError(
+                "ASANA_API_BASE_URL must be the official HTTPS Asana endpoint; "
+                "insecure HTTP is limited to loopback tests with "
+                "ASANA_ALLOW_INSECURE_LOCALHOST=1"
+            )
+        return value.rstrip("/")
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, str | int] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        encoded_query = urllib.parse.urlencode(query or {})
+        url = f"{self.base_url}{path}"
+        if encoded_query:
+            url = f"{url}?{encoded_query}"
+        body = None if data is None else json.dumps({"data": data}).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "User-Agent": "flashy-factory-asana/1",
+            },
+        )
+        try:
+            with self.opener.open(request, timeout=20) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            raw = error.read(64 * 1024)
+            message = self._api_error(raw, f"Asana API returned HTTP {error.code}")
+            retry_at = self._retry_at(error.headers.get("Retry-After"))
+            raise ClientError(
+                message,
+                rate_limited=error.code == 429,
+                retry_at=retry_at,
+            ) from error
+        except urllib.error.URLError as error:
+            raise ClientError(f"failed to reach Asana API: {error.reason}") from error
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ClientError("Asana API response exceeded 2 MiB")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ClientError("Asana API returned invalid JSON") from error
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise ClientError("Asana API response has no data field")
+        return payload
+
+    def paginate(
+        self,
+        path: str,
+        *,
+        query: dict[str, str | int] | None = None,
+        maximum: int = 1000,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        offset: str | None = None
+        while True:
+            page_query = dict(query or {})
+            page_query["limit"] = min(100, maximum + 1)
+            if offset:
+                page_query["offset"] = offset
+            payload = self.request("GET", path, query=page_query)
+            page = payload.get("data")
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise ClientError("Asana API returned an invalid collection")
+            items.extend(page)
+            if len(items) > maximum:
+                raise ClientError(
+                    f"Asana result exceeded {maximum} records; narrow the project or state"
+                )
+            next_page = payload.get("next_page")
+            offset = next_page.get("offset") if isinstance(next_page, dict) else None
+            if not isinstance(offset, str) or not offset:
+                return items
+
+    @staticmethod
+    def _api_error(raw: bytes, fallback: str) -> str:
+        try:
+            payload = json.loads(raw)
+            errors = payload.get("errors")
+            message = errors[0].get("message") if isinstance(errors, list) and errors else None
+            if isinstance(message, str) and message.strip():
+                return f"{fallback}: {message[:500]}"
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            pass
+        return fallback
+
+    @staticmethod
+    def _retry_at(value: str | None) -> str | None:
+        if not value or not value.isdigit():
+            return None
+        return (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=int(value))
+        ).isoformat().replace("+00:00", "Z")
+
+
+def encoded_gid(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def resolve_section(client: AsanaClient, project_gid: str, name: str) -> dict[str, Any]:
+    sections = client.paginate(
+        f"/projects/{encoded_gid(project_gid)}/sections", maximum=1000
+    )
+    matches = [section for section in sections if section.get("name") == name]
+    if len(matches) != 1:
+        raise ClientError(
+            f"Asana project must contain exactly one section named {name!r}; "
+            f"found {len(matches)}"
+        )
+    require_gid("section.gid", matches[0].get("gid"))
+    return matches[0]
+
+
+def resolve_tag(client: AsanaClient, workspace_gid: str, name: str) -> dict[str, Any]:
+    tags = client.paginate(
+        f"/workspaces/{encoded_gid(workspace_gid)}/tags", maximum=1000
+    )
+    matches = [tag for tag in tags if tag.get("name") == name]
+    if len(matches) != 1:
+        raise ClientError(
+            f"Asana workspace must contain exactly one tag named {name!r}; "
+            f"found {len(matches)}"
+        )
+    require_gid("tag.gid", matches[0].get("gid"))
+    return matches[0]
+
+
+def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    project_gid = require_gid(
+        "--project or ASANA_PROJECT_GID",
+        args.project or os.environ.get("ASANA_PROJECT_GID"),
+    )
+    state = require_name("--state", args.state)
+    labels = [require_name("--label", label) for label in args.label]
+    if not 1 <= args.max_results <= 1000:
+        raise ClientError("--max-results must be between 1 and 1000")
+    section = resolve_section(client, project_gid, state)
+    section_gid = require_gid("section.gid", section.get("gid"))
+    tasks = client.paginate(
+        "/tasks",
+        query={
+            "project": project_gid,
+            "section": section_gid,
+            "completed_since": "now",
+            "opt_fields": (
+                "gid,name,notes,completed,modified_at,permalink_url,"
+                "tags.gid,tags.name,created_by.name"
+            ),
+        },
+        maximum=args.max_results,
+    )
+    issues = []
+    for task in tasks:
+        if task.get("completed") is True:
+            continue
+        tags = task.get("tags") if isinstance(task.get("tags"), list) else []
+        tag_names = [
+            tag.get("name")
+            for tag in tags
+            if isinstance(tag, dict) and isinstance(tag.get("name"), str)
+        ]
+        if not all(label in tag_names for label in labels):
+            continue
+        gid = require_gid("task.gid", task.get("gid"))
+        title = task.get("name")
+        if not isinstance(title, str) or not title.strip():
+            raise ClientError(f"Asana task {gid} has no valid name")
+        created_by = task.get("created_by")
+        author = created_by.get("name", "") if isinstance(created_by, dict) else ""
+        modified_at = task.get("modified_at", "")
+        tag_gids = sorted(
+            str(tag.get("gid", "")) for tag in tags if isinstance(tag, dict)
+        )
+        revision = f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}"
+        issues.append(
+            {
+                "key": gid,
+                "title": title,
+                "description": str(task.get("notes") or "")[:2000],
+                "state": state,
+                "labels": tag_names,
+                "url": str(task.get("permalink_url") or ""),
+                "author": str(author),
+                "revision": revision,
+            }
+        )
+    return {"issues": issues}
+
+
+def get_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    gid = require_gid("task_gid", args.task_gid)
+    project_gid = configured_project_gid()
+    task = task_in_project(client, gid, project_gid, include_context=True)
+    stories = client.paginate(
+        f"/tasks/{encoded_gid(gid)}/stories",
+        query={
+            "opt_fields": (
+                "gid,type,resource_subtype,text,created_at,created_by.name"
+            )
+        },
+        maximum=200,
+    )
+    comments = [
+        story
+        for story in stories
+        if story.get("type") == "comment"
+        or story.get("resource_subtype") == "comment_added"
+    ]
+    return {"data": task, "stories": comments}
+
+
+def configured_project_gid() -> str:
+    return require_gid(
+        "ASANA_PROJECT_GID",
+        os.environ.get("ASANA_PROJECT_GID"),
+    )
+
+
+def task_in_project(
+    client: AsanaClient,
+    gid: str,
+    project_gid: str,
+    *,
+    include_context: bool = False,
+) -> dict[str, Any]:
+    fields = "gid,name,memberships.project.gid,memberships.project.name"
+    if include_context:
+        fields = (
+            f"{fields},notes,completed,modified_at,permalink_url,assignee.name,"
+            "created_by.name,tags.gid,tags.name,memberships.section.gid,"
+            "memberships.section.name"
+        )
+    payload = client.request(
+        "GET",
+        f"/tasks/{encoded_gid(gid)}",
+        query={"opt_fields": fields},
+    )
+    task = payload.get("data")
+    if not isinstance(task, dict):
+        raise ClientError(f"Asana task {gid} returned invalid data")
+    memberships = (
+        task.get("memberships") if isinstance(task.get("memberships"), list) else []
+    )
+    belongs = any(
+        isinstance(membership, dict)
+        and isinstance(membership.get("project"), dict)
+        and membership["project"].get("gid") == project_gid
+        for membership in memberships
+    )
+    if not belongs:
+        raise ClientError(
+            f"Asana task {gid} does not belong to ASANA_PROJECT_GID {project_gid}"
+        )
+    return task
+
+
+def create_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    project_gid = require_gid(
+        "--project or ASANA_PROJECT_GID",
+        args.project or os.environ.get("ASANA_PROJECT_GID"),
+    )
+    data: dict[str, Any] = {
+        "name": require_name("--name", args.name),
+        "projects": [project_gid],
+    }
+    if args.notes_file is not None:
+        data["notes"] = read_text(args.notes_file, "notes")
+    if args.section is not None:
+        section = resolve_section(
+            client, project_gid, require_name("--section", args.section)
+        )
+        data.pop("projects")
+        data["memberships"] = [
+            {
+                "project": project_gid,
+                "section": require_gid("section.gid", section.get("gid")),
+            }
+        ]
+    return client.request("POST", "/tasks", data=data)
+
+
+def update_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    gid = require_gid("task_gid", args.task_gid)
+    task_in_project(client, gid, configured_project_gid())
+    data: dict[str, Any] = {}
+    if args.name is not None:
+        data["name"] = require_name("--name", args.name)
+    if args.notes_file is not None:
+        data["notes"] = read_text(args.notes_file, "notes")
+    if args.completed is not None:
+        data["completed"] = args.completed == "true"
+    if not data:
+        raise ClientError("update requires --name, --notes-file, or --completed")
+    return client.request("PUT", f"/tasks/{encoded_gid(gid)}", data=data)
+
+
+def comment_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    gid = require_gid("task_gid", args.task_gid)
+    task_in_project(client, gid, configured_project_gid())
+    text = read_text(args.text_file, "comment")
+    if not text.strip():
+        raise ClientError("comment must not be empty")
+    return client.request(
+        "POST", f"/tasks/{encoded_gid(gid)}/stories", data={"text": text}
+    )
+
+
+def move_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    gid = require_gid("task_gid", args.task_gid)
+    project_gid = configured_project_gid()
+    task_in_project(client, gid, project_gid)
+    section = resolve_section(client, project_gid, require_name("--section", args.section))
+    section_gid = require_gid("section.gid", section.get("gid"))
+    return client.request(
+        "POST",
+        f"/sections/{encoded_gid(section_gid)}/addTask",
+        data={"task": gid},
+    )
+
+
+def change_tag(
+    client: AsanaClient, args: argparse.Namespace, operation: str
+) -> dict[str, Any]:
+    gid = require_gid("task_gid", args.task_gid)
+    task_in_project(client, gid, configured_project_gid())
+    workspace_gid = require_gid(
+        "ASANA_WORKSPACE_GID",
+        os.environ.get("ASANA_WORKSPACE_GID"),
+    )
+    tag = resolve_tag(client, workspace_gid, require_name("--tag", args.tag))
+    tag_gid = require_gid("tag.gid", tag.get("gid"))
+    return client.request(
+        "POST",
+        f"/tasks/{encoded_gid(gid)}/{operation}",
+        data={"tag": tag_gid},
+    )
+
+
+def parser() -> argparse.ArgumentParser:
+    command = argparse.ArgumentParser(
+        description="Authenticated Asana client for Flashy Factory agents"
+    )
+    subcommands = command.add_subparsers(dest="command", required=True)
+
+    listing = subcommands.add_parser("list", help="list source tasks")
+    listing.add_argument("--project")
+    listing.add_argument("--state", required=True, help="exact Asana section name")
+    listing.add_argument("--label", action="append", default=[], help="required tag name")
+    listing.add_argument("--max-results", type=int, default=200)
+
+    getting = subcommands.add_parser("get", help="fetch one live task")
+    getting.add_argument("task_gid")
+
+    creating = subcommands.add_parser("create", help="create a project task")
+    creating.add_argument("--project")
+    creating.add_argument("--name", required=True)
+    creating.add_argument("--notes-file")
+    creating.add_argument("--section")
+
+    updating = subcommands.add_parser("update", help="update selected task fields")
+    updating.add_argument("task_gid")
+    updating.add_argument("--name")
+    updating.add_argument("--notes-file")
+    updating.add_argument("--completed", choices=["true", "false"])
+
+    commenting = subcommands.add_parser("comment", help="add a task comment")
+    commenting.add_argument("task_gid")
+    commenting.add_argument("--text-file", required=True)
+
+    moving = subcommands.add_parser("move", help="move a task to a project section")
+    moving.add_argument("task_gid")
+    moving.add_argument("--section", required=True)
+
+    for name in ("add-tag", "remove-tag"):
+        tagging = subcommands.add_parser(name, help=f"{name.replace('-', ' ')} on a task")
+        tagging.add_argument("task_gid")
+        tagging.add_argument("--tag", required=True)
+    return command
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        client = AsanaClient()
+        if args.command == "list":
+            result = list_source(client, args)
+        elif args.command == "get":
+            result = get_task(client, args)
+        elif args.command == "create":
+            result = create_task(client, args)
+        elif args.command == "update":
+            result = update_task(client, args)
+        elif args.command == "comment":
+            result = comment_task(client, args)
+        elif args.command == "move":
+            result = move_task(client, args)
+        elif args.command == "add-tag":
+            result = change_tag(client, args, "addTag")
+        else:
+            result = change_tag(client, args, "removeTag")
+        json.dump(result, sys.stdout, separators=(",", ":"))
+        sys.stdout.write("\n")
+        return 0
+    except ClientError as error:
+        message = str(error)
+        token = os.environ.get("ASANA_ACCESS_TOKEN", "")
+        if token:
+            message = message.replace(token, "[REDACTED]")
+        if error.rate_limited:
+            body: dict[str, Any] = {
+                "kind": "rate_limited",
+                "message": message[:500],
+            }
+            if error.retry_at:
+                body["retry_at"] = error.retry_at
+            json.dump({"error": body}, sys.stdout, separators=(",", ":"))
+            sys.stdout.write("\n")
+        print(f"asana: {message}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -22,7 +22,7 @@ fn cleanup_previews_then_removes_a_retained_worktree_and_preserves_its_branch() 
         &repository,
         &["config", "user.email", "factory@example.test"],
     );
-    git(&repository, &["config", "user.name", "Factory Test"]);
+    git(&repository, &["config", "user.name", "Flashy Factory Test"]);
     fs::write(repository.join("README.md"), "fixture\n").unwrap();
     git(&repository, &["add", "README.md"]);
     git(&repository, &["commit", "-m", "fixture"]);
@@ -193,7 +193,7 @@ fn cleanup_retries_an_orphaned_recorded_worktree() {
         &repository,
         &["config", "user.email", "factory@example.test"],
     );
-    git(&repository, &["config", "user.name", "Factory Test"]);
+    git(&repository, &["config", "user.name", "Flashy Factory Test"]);
     fs::write(repository.join("README.md"), "fixture\n").unwrap();
     git(&repository, &["add", "README.md"]);
     git(&repository, &["commit", "-m", "fixture"]);

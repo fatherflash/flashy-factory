@@ -13,7 +13,8 @@ use crate::config::{Config, ExecutionMode, repository_remote_identity};
 const TRIAGE_WORKFLOW: &str = include_str!("../.factory/workflows/triage.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.factory/workflows/implement.md");
 const BUG_FINDER_WORKFLOW: &str = include_str!("../.factory/workflows/bug-finder.md");
-const GITHUB_SOURCE: &str = include_str!("../.factory/sources/github");
+const ASANA_CLIENT: &str = include_str!("../.factory/clients/asana");
+const ASANA_SOURCE: &str = include_str!("../.factory/sources/asana");
 
 #[derive(Debug, Clone)]
 pub struct InitOptions {
@@ -80,7 +81,7 @@ impl fmt::Display for InitReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             formatter,
-            "Factory initialization for {}",
+            "Flashy Factory initialization for {}",
             self.repository.display()
         )?;
         for resource in &self.resources {
@@ -100,17 +101,19 @@ impl fmt::Display for InitReport {
             if self.exit_code() == 0 {
                 writeln!(
                     formatter,
-                    "Factory setup is complete; no changes were made."
+                    "Flashy Factory setup is complete; no changes were made."
                 )
             } else {
                 writeln!(
                     formatter,
-                    "Factory setup is incomplete; run factory init to apply these changes."
+                    "Flashy Factory setup is incomplete; run factory init to apply these changes."
                 )
             }
         } else if self.exit_code() == 0 {
             writeln!(formatter, "Next:")?;
-            writeln!(formatter, "  edit .factory/config.toml for your Project")?;
+            writeln!(formatter, "  export ASANA_ACCESS_TOKEN=...")?;
+            writeln!(formatter, "  export ASANA_PROJECT_GID=...")?;
+            writeln!(formatter, "  export ASANA_WORKSPACE_GID=...")?;
             if self.execution_mode == ExecutionMode::DockerSandbox {
                 writeln!(formatter, "  sbx login")?;
                 writeln!(formatter, "  sbx secret set -g openai --oauth")?;
@@ -121,7 +124,7 @@ impl fmt::Display for InitReport {
         } else {
             writeln!(
                 formatter,
-                "Factory initialization stopped after a failed resource; fix the error and retry."
+                "Flashy Factory initialization stopped after a failed resource; fix the error and retry."
             )
         }
     }
@@ -408,9 +411,14 @@ fn plan_default_assets(repository: &Path) -> Result<Vec<FilePlan>> {
             "triage workflow",
         )?,
         plan_executable_file(
-            factory.join("sources/github"),
-            GITHUB_SOURCE,
-            "GitHub source adapter",
+            factory.join("clients/asana"),
+            ASANA_CLIENT,
+            "Asana agent client",
+        )?,
+        plan_executable_file(
+            factory.join("sources/asana"),
+            ASANA_SOURCE,
+            "Asana source adapter",
         )?,
         plan_file(
             factory.join("workflows/implement.md"),
@@ -563,20 +571,19 @@ fn default_config(execution_mode: ExecutionMode) -> String {
         document["worker"]["cpus"] = value(4);
     }
     document["source"] = Item::Table(Table::new());
-    document["source"]["command"] =
-        toml_edit::value(toml_edit::Array::from_iter([".factory/sources/github"]));
+    document["source"]["command"] = toml_edit::value(toml_edit::Array::from_iter([
+        ".factory/sources/asana",
+        "--max-results",
+        "200",
+    ]));
     document["trigger"] = Item::Table(Table::new());
     document["trigger"]["triage"] = Item::Table(Table::new());
     document["trigger"]["triage"]["type"] = value("source");
-    document["trigger"]["triage"]["state"] = value("open");
-    document["trigger"]["triage"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-for-spec"]));
+    document["trigger"]["triage"]["state"] = value("Ready For Spec");
     document["trigger"]["triage"]["workflow"] = value(".factory/workflows/triage.md");
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
-    document["trigger"]["implement"]["state"] = value("open");
-    document["trigger"]["implement"]["labels"] =
-        toml_edit::value(toml_edit::Array::from_iter(["factory:ready-to-implement"]));
+    document["trigger"]["implement"]["state"] = value("Ready To Implement");
     document["trigger"]["implement"]["workflow"] = value(".factory/workflows/implement.md");
     document["trigger"]["implement"]["timeout"] = value("4h");
     document["trigger"]["bug-finder"] = Item::Table(Table::new());

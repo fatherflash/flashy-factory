@@ -222,7 +222,9 @@ fn rejects_an_existing_database_that_is_not_writable() {
         .env("FACTORY_DATA_HOME", &data_home)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Factory database is read-only"));
+        .stderr(predicate::str::contains(
+            "Flashy Factory database is read-only",
+        ));
 
     let mut permissions = fs::metadata(&database).unwrap().permissions();
     permissions.set_mode(0o600);
@@ -236,12 +238,22 @@ fn validates_a_configurable_source_label_trigger() {
         fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/config.toml")).unwrap();
     fs::write(
         &path,
-        contents.replace(
-            "labels = [\"factory:ready-for-spec\"]",
-            "labels = [\"factory:custom-stage\"]",
-        ),
+        contents
+            .replace(
+                "labels = [\"factory:ready-for-spec\"]",
+                "labels = [\"factory:custom-stage\"]",
+            )
+            .replace(
+                "command = [\".factory/sources/github\"]",
+                "command = [\".factory/source.sh\"]",
+            ),
     )
     .unwrap();
+    let source = repository.join(".factory/source.sh");
+    fs::write(&source, "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[]}'\n").unwrap();
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&source, permissions).unwrap();
     fs::create_dir_all(repository.join(".factory/workflows")).unwrap();
     fs::write(repository.join(".factory/workflows/triage.md"), "Triage.\n").unwrap();
     fs::write(

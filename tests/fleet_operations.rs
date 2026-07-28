@@ -459,7 +459,7 @@ fn fleet_status_poll_workspace_recovery_and_disabled_lifecycle_remain_inspectabl
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "disabled; re-enable it and restart Factory",
+            "disabled; re-enable it and restart Flashy Factory",
         ));
     assert!(retained.exists());
     assert_eq!(

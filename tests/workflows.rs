@@ -217,6 +217,18 @@ workflow = ".factory/workflows/maintenance.md"
 }
 
 #[test]
+fn asana_example_resolves_the_checked_in_workflows() {
+    let fixture = Fixture::new(include_str!("../examples/asana-config.toml"));
+    let config = fixture.config().unwrap();
+    let catalog = WorkflowCatalog::load(&config).unwrap();
+    assert!(catalog.entries.iter().all(|entry| entry.errors.is_empty()));
+    assert_eq!(
+        config.source.unwrap().command,
+        vec![".factory/sources/asana", "--max-results", "200",]
+    );
+}
+
+#[test]
 fn rejects_mixed_trigger_fields() {
     let fixture = Fixture::new(&config_with(
         r#"[trigger.bad]

@@ -1365,7 +1365,7 @@ fn approval_reservation_serializes_reapproval_against_active_work() {
             .reserve_issue_approval("owainlewis/factory", 3, "reservation-three")
             .unwrap_err()
             .to_string()
-            .contains("active Factory work")
+            .contains("active Flashy Factory work")
     );
 }
 
@@ -1491,7 +1491,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
             .unwrap()
             .error
             .as_deref(),
-        Some("Factory detected an interrupted run without a live owned process")
+        Some("Flashy Factory detected an interrupted run without a live owned process")
     );
 }
 

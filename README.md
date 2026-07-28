@@ -1,19 +1,20 @@
-# Factory
+# Flashy Factory
 
-[![CI](https://github.com/owainlewis/factory/actions/workflows/ci.yml/badge.svg)](https://github.com/owainlewis/factory/actions/workflows/ci.yml)
+[![CI](https://github.com/fatherflash/flashy-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/fatherflash/flashy-factory/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f6feb.svg)](LICENSE)
 
-Factory keeps coding agents working on a repository without making a human
-orchestrate every step from a terminal.
+Flashy Factory keeps coding agents working on a repository without making a
+human orchestrate every step from a terminal.
 
-It watches a trusted ticket queue. When a configured condition matches, Factory
-creates a durable task, prepares an isolated workspace, and gives one Markdown
-workflow to an agent. The agent uses normal tools such as `gh` and `git` to do
-the work. When nothing matches, Factory does nothing and spends no model tokens.
+It watches a trusted Asana task queue. When a configured condition matches,
+Flashy Factory creates a durable local task, prepares an isolated workspace,
+and gives one Markdown workflow to an agent. The agent uses the repository's
+Asana client plus normal tools such as `gh` and `git`. When nothing matches,
+Flashy Factory does nothing and spends no model tokens.
 
-![Human intent enters a trusted ticket queue; Factory runs isolated work and produces evidence; human review gates the team's merge; shipped changes return signals to the queue](docs/assets/readme/factory-loop.svg)
+![Human intent enters a trusted ticket queue; Flashy Factory runs isolated work and produces evidence; human review gates the team's merge; shipped changes return signals to the queue](docs/assets/readme/factory-loop.svg)
 
-## Why Factory exists
+## Why Flashy Factory exists
 
 Coding agents can implement increasingly substantial changes, but most teams
 still operate them as one-off terminal sessions. Every developer uses different
@@ -21,13 +22,13 @@ prompts, skills, checks, and handoff conventions. Humans remain responsible for
 noticing ready work, starting an agent, waiting for CI, forwarding review
 feedback, and remembering to try again.
 
-Factory makes this process repeatable. It plays a similar role to CI/CD: work
-enters a consistent system, receives the same checks and feedback loops, and
-keeps moving until it reaches a human decision.
+Flashy Factory makes this process repeatable. It plays a similar role to CI/CD:
+work enters a consistent system, receives the same checks and feedback loops,
+and keeps moving until it reaches a human decision.
 
 The goal is not to replace developers. Humans decide what matters, supply
 product context, review the result, and remain accountable for what ships.
-Factory removes the manual coordination between those decisions.
+Flashy Factory removes the manual coordination between those decisions.
 
 ## The ticket is the control plane
 
@@ -43,25 +44,24 @@ for implementation.
 
 ![An example ticket moves through specification, human approval, implementation, and human review, with feedback requesting another implementation pass](docs/assets/readme/ticket-workflow.svg)
 
-The status names in this example are not built into Factory. They are ordinary
-issue labels and repository-owned prompts. You may also track them on a
-GitHub Project board for your own visualization; Factory does not read that
-board.
+The status names in this example are not built into Flashy Factory. In this
+fork, they are ordinary Asana project sections and repository-owned prompts.
+Moving a task into a configured section is the human authorization boundary.
 
 ## A deliberately small model
 
-Factory has four concepts:
+Flashy Factory has four concepts:
 
 | Concept | Responsibility |
 | --- | --- |
-| Source | The ticket queue and control plane. GitHub in v1. |
+| Source | The ticket queue and control plane. Asana in this fork. |
 | Trigger | A status, label, or schedule condition. |
 | Workflow | A plain Markdown prompt describing the outcome and policy. |
 | Worker | The agent runtime, sandbox, timeout, and concurrency limit. |
 
 The boundary is intentional:
 
-- Factory owns polling, trust checks, deduplication, durable claims,
+- Flashy Factory owns polling, trust checks, deduplication, durable claims,
   concurrency, timeouts, sandbox lifecycle, supervision, cancellation, history,
   and recovery.
 - The workflow and agent own adaptive engineering work: reading the issue,
@@ -69,31 +69,31 @@ The boundary is intentional:
   and `git`, opening a pull request, responding to CI and review, and updating
   the ticket.
 
-Factory does not encode a fixed SDLC, a workflow graph, or deterministic GitHub
-effects. A trigger means only: **when this condition is true, run this prompt**.
+Flashy Factory does not encode a fixed SDLC, a workflow graph, or deterministic
+tracker effects. A trigger means only: **when this condition is true, run this
+prompt**.
 
 ## Human review is the shipping boundary
 
-Factory revalidates live source state immediately before execution, but does
-not filter tickets by author. The trust boundary for a source trigger is
-whoever can satisfy its configured condition, such as applying a label or
-changing a Project status, not who opened the ticket. Do not use a source whose
-configured condition can be changed by untrusted people. Ticket bodies,
-comments, linked pull requests, and attachments remain untrusted input
-regardless. Use narrow credentials and protected branches that the worker
-cannot bypass.
+Flashy Factory revalidates live source state immediately before execution, but
+does not filter tasks by author. The trust boundary is whoever can move a task
+into a configured Asana section or apply a required tag. Do not allow untrusted
+people to satisfy those conditions. Task notes, comments, linked pull requests,
+and attachments remain untrusted input regardless. Use narrow credentials and
+protected branches that the worker cannot bypass.
 
-Factory-created software pull requests remain for human review. Factory and its
-default workflows never merge them or enable automatic merge. The human who
-merges remains accountable for what ships.
+Flashy Factory-created software pull requests remain for human review. Flashy
+Factory and its default workflows never merge them or enable automatic merge.
+The human who merges remains accountable for what ships.
 
 For the complete trust and isolation model, read the
 [operations guide](docs/operations.md) and [security policy](SECURITY.md).
 
 ## Get started
 
-Install Rust, Git, the GitHub CLI, and the Codex CLI, then authenticate the host
-tools and install Factory:
+Install Python 3, Rust, Git, the GitHub CLI, and the Codex CLI. Export the Asana
+project, workspace, and access-token variables described in the
+[Asana guide](docs/asana.md), then authenticate the host tools and install:
 
 ```sh
 gh auth login
@@ -101,14 +101,14 @@ codex login
 cargo install --path . --locked
 ```
 
-From the repository Factory will manage:
+From the repository Flashy Factory will manage:
 
 ```sh
 factory init
 ```
 
 Edit the generated configuration and workflows for your repository, then
-validate them and start Factory:
+validate them and start Flashy Factory:
 
 ```sh
 factory validate
@@ -123,7 +123,7 @@ recovery, and cleanup.
 
 ## V1 scope
 
-V1 intentionally supports:
+This fork intentionally supports:
 
 - one repository or an explicit fleet of repository-owned configurations;
 - status, label, and schedule triggers;
@@ -131,11 +131,10 @@ V1 intentionally supports:
 - explicit Markdown workflows;
 - durable queueing, supervision, history, cancellation, and recovery.
 
-Jira, Linear, cross-repository workflows, other agent runtimes, hosted workers,
-and webhook wake-ups can fit behind the same source, trigger, workflow, and
-worker boundaries later. This repository includes a
-[Jira source adapter](docs/jira.md) as an example of that extension point, but
-Jira is not part of the supported V1 scope.
+Asana is the configured source of truth for this repository. The upstream
+GitHub adapter and experimental Jira adapter remain as compatibility examples.
+Linear, cross-repository workflows, hosted workers, and webhook wake-ups can
+fit behind the same source, trigger, workflow, and worker boundaries later.
 
 ## Learn more
 
@@ -143,6 +142,7 @@ Jira is not part of the supported V1 scope.
 - [Labels and ticket status](docs/labels.md)
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
+- [Asana source and agent client](docs/asana.md)
 - [Jira source adapter](docs/jira.md)
 - [Docker Sandbox development environment](docs/docker-sandbox-template.md)
 - [Contributing](CONTRIBUTING.md)
@@ -150,4 +150,4 @@ Jira is not part of the supported V1 scope.
 
 ## License
 
-Factory is available under the [MIT License](LICENSE).
+Flashy Factory is available under the [MIT License](LICENSE).

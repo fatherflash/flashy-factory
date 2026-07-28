@@ -3,11 +3,11 @@ name = "factory"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "A local-first supervisor for agent workflows"
-repository = "https://github.com/owainlewis/factory"
-homepage = "https://github.com/owainlewis/factory"
+description = "Flashy Factory, a local-first supervisor for agent workflows"
+repository = "https://github.com/fatherflash/flashy-factory"
+homepage = "https://github.com/fatherflash/flashy-factory"
 readme = "README.md"
-keywords = ["agents", "automation", "cli", "github", "workflow"]
+keywords = ["agents", "asana", "automation", "cli", "workflow"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]

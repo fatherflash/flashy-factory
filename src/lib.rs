@@ -1,5 +1,5 @@
 #[cfg(not(unix))]
-compile_error!("Factory v1 supports Unix-like operating systems only");
+compile_error!("Flashy Factory v1 supports Unix-like operating systems only");
 
 pub mod approval;
 pub mod clone;

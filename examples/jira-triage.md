@@ -1,6 +1,6 @@
 # Triage and refine a Jira ticket
 
-You are working on the Jira issue key supplied by Factory. Use the authenticated
+You are working on the Jira issue key supplied by Flashy Factory. Use the authenticated
 `jiractrl` CLI for all Jira reads and updates. Do not implement code or open a
 pull request in this workflow.
 

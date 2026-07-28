@@ -79,7 +79,7 @@ workflow = ".factory/workflows/implement.md"
     executable(&path.join(".factory/source.sh"), source_body);
     for arguments in [
         &["config", "user.email", "factory@example.com"][..],
-        &["config", "user.name", "Factory Test"][..],
+        &["config", "user.name", "Flashy Factory Test"][..],
         &["add", "."][..],
         &["commit", "--quiet", "-m", "fixture"][..],
         &["update-ref", "refs/remotes/origin/main", "HEAD"][..],
@@ -355,7 +355,7 @@ fn two_repository_idle_fleet_stays_running_and_launches_no_workers() {
     assert!(output.status.success(), "{output:?}");
     assert!(!worker_marker.exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Factory fleet ready: repositories=2 healthy=2"));
+    assert!(stderr.contains("Flashy Factory fleet ready: repositories=2 healthy=2"));
 }
 
 #[test]
@@ -400,7 +400,7 @@ fn unavailable_repository_does_not_stop_a_healthy_peer() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("repository=acme/failed status=unavailable"));
-    assert!(stderr.contains("Factory fleet ready: repositories=2 healthy=1"));
+    assert!(stderr.contains("Flashy Factory fleet ready: repositories=2 healthy=1"));
     assert!(!worker_marker.exists());
 }
 

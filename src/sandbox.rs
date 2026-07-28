@@ -25,7 +25,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const CREATE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CODEX_COMMAND: &str = "set -o pipefail; codex exec --ephemeral --ignore-user-config --sandbox danger-full-access --json --color never --output-last-message /tmp/factory-last-message - 2> >(tee /tmp/factory-stderr >&2) | tee /tmp/factory-stdout";
-const SNAPSHOT_COMMAND: &str = "git add -A && if ! git diff --cached --quiet; then git -c user.name=Factory -c user.email=factory@localhost commit --no-gpg-sign --no-verify -m 'factory: preserve sandbox changes'; fi";
+const SNAPSHOT_COMMAND: &str = "git add -A && if ! git diff --cached --quiet; then git -c 'user.name=Flashy Factory' -c user.email=factory@localhost commit --no-gpg-sign --no-verify -m 'factory: preserve sandbox changes'; fi";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxIdentity {
@@ -991,7 +991,7 @@ esac
             std::process::Command::new("git")
                 .args([
                     "-c",
-                    "user.name=Factory",
+                    "user.name=Flashy Factory",
                     "-c",
                     "user.email=factory@localhost",
                     "add",
@@ -1006,7 +1006,7 @@ esac
             std::process::Command::new("git")
                 .args([
                     "-c",
-                    "user.name=Factory",
+                    "user.name=Flashy Factory",
                     "-c",
                     "user.email=factory@localhost",
                     "commit",

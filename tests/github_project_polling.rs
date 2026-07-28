@@ -124,10 +124,10 @@ if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
   case "$*" in
     *'query($project:ID!'*)
       if [ -f .empty ]; then printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}'; exit 0; fi
-      printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"ITEM_41","updatedAt":"%s","content":{"id":"ISSUE_41","number":41,"title":"Factory pipeline","url":"https://github.com/example/repo/issues/41","state":"%s","updatedAt":"2026-07-21T09:00:00Z","author":{"id":"%s","login":"%s"},"repository":{"nameWithOwner":"example/repo"}},"fieldValueByName":{"optionId":"%s","name":"state","updatedAt":"%s"}}]}}}}' "$updated" "$issue_state" "$author_id" "$author_login" "$option" "$updated"
+      printf '{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"ITEM_41","updatedAt":"%s","content":{"id":"ISSUE_41","number":41,"title":"Flashy Factory pipeline","url":"https://github.com/example/repo/issues/41","state":"%s","updatedAt":"2026-07-21T09:00:00Z","author":{"id":"%s","login":"%s"},"repository":{"nameWithOwner":"example/repo"}},"fieldValueByName":{"optionId":"%s","name":"state","updatedAt":"%s"}}]}}}}' "$updated" "$issue_state" "$author_id" "$author_login" "$option" "$updated"
       ;;
     *)
-      printf '{"data":{"node":{"id":"ITEM_41","updatedAt":"%s","content":{"id":"ISSUE_41","number":41,"title":"Factory pipeline","url":"https://github.com/example/repo/issues/41","state":"%s","updatedAt":"2026-07-21T09:00:00Z","author":{"id":"%s","login":"%s"},"repository":{"nameWithOwner":"example/repo"}},"fieldValues":{"nodes":[{}, {"optionId":"%s","name":"state","updatedAt":"%s","field":{"id":"FIELD_STATUS"}}]}}}}' "$updated" "$issue_state" "$author_id" "$author_login" "$option" "$updated"
+      printf '{"data":{"node":{"id":"ITEM_41","updatedAt":"%s","content":{"id":"ISSUE_41","number":41,"title":"Flashy Factory pipeline","url":"https://github.com/example/repo/issues/41","state":"%s","updatedAt":"2026-07-21T09:00:00Z","author":{"id":"%s","login":"%s"},"repository":{"nameWithOwner":"example/repo"}},"fieldValues":{"nodes":[{}, {"optionId":"%s","name":"state","updatedAt":"%s","field":{"id":"FIELD_STATUS"}}]}}}}' "$updated" "$issue_state" "$author_id" "$author_login" "$option" "$updated"
       ;;
   esac
   exit 0

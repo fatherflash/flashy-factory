@@ -122,7 +122,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("sandbox = \"worktree\""));
     assert!(config.contains("runtime = \"codex\""));
     assert!(config.contains("[source]"));
-    assert!(config.contains("\".factory/sources/github\""));
+    assert!(config.contains("\".factory/sources/asana\""));
+    assert!(config.contains("\"--max-results\""));
+    assert!(config.contains("\"Ready For Spec\""));
+    assert!(config.contains("\"Ready To Implement\""));
     assert!(!config.contains("--project-owner"));
     assert!(!config.contains("--project-number"));
     assert!(!config.contains("--trusted-user"));
@@ -154,16 +157,25 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         fs::read_to_string(fixture.workflows().join("bug-finder.md")).unwrap(),
         include_str!("../.factory/workflows/bug-finder.md")
     );
-    let source = fixture.repository.join(".factory/sources/github");
+    let source = fixture.repository.join(".factory/sources/asana");
     assert_eq!(
         fs::read_to_string(&source).unwrap(),
-        include_str!("../.factory/sources/github")
+        include_str!("../.factory/sources/asana")
+    );
+    let client = fixture.repository.join(".factory/clients/asana");
+    assert_eq!(
+        fs::read_to_string(&client).unwrap(),
+        include_str!("../.factory/clients/asana")
     );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_ne!(
             fs::metadata(source).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert_ne!(
+            fs::metadata(client).unwrap().permissions().mode() & 0o111,
             0
         );
     }

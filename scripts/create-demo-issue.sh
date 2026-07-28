@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repository="owainlewis/factory"
-ready_label="factory:ready-for-spec"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+asana_client="${FLASHY_FACTORY_ASANA_CLIENT:-$script_dir/../.factory/clients/asana}"
+ready_section="Ready For Spec"
 
 usage() {
   echo "Usage: $0 <idea-title> [idea-description]" >&2
-  echo "Creates a real demo issue in ${repository} labelled ${ready_label}." >&2
+  echo "Creates a real demo task in ASANA_PROJECT_GID under ${ready_section}." >&2
 }
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -22,24 +23,28 @@ if [[ -z ${title//[[:space:]]/} ]]; then
   exit 2
 fi
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "GitHub CLI is required. Install gh and retry." >&2
+if [[ ! -x "$asana_client" ]]; then
+  echo "Asana client is missing or not executable: $asana_client" >&2
   exit 1
 fi
 
-gh auth status >/dev/null
+result=$(printf '%s\n' "$body" | "$asana_client" create \
+  --name "$title" \
+  --section "$ready_section" \
+  --notes-file -)
 
-issue_url=$(gh issue create \
-  --repo "$repository" \
-  --title "$title" \
-  --body "$body" \
-  --label "$ready_label")
+task=$(printf '%s' "$result" | python3 -c '
+import json
+import sys
+data = json.load(sys.stdin)["data"]
+print(data.get("permalink_url") or data["gid"])
+')
 
-echo "Demo issue: ${issue_url}"
-echo "Label: ${ready_label}"
+echo "Demo task: ${task}"
+echo "Section: ${ready_section}"
 echo
 echo "Next:"
 echo "  1. Run: cargo run -- run"
-echo "  2. Wait for the agent to refine the ticket and remove ${ready_label}."
-echo "  3. Review the ticket and add factory:ready-to-implement."
+echo "  2. Wait for the agent to refine the task and move it to Creating Spec."
+echo "  3. Review the task and move it to Ready To Implement."
 echo "  4. Watch the implementation agent open a PR."

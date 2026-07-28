@@ -1,6 +1,6 @@
 # Implement a ready Jira ticket
 
-You are working on the Jira issue key supplied by Factory. Use `jiractrl` for
+You are working on the Jira issue key supplied by Flashy Factory. Use `jiractrl` for
 Jira and authenticated `git` and `gh` for repository and pull-request work.
 Never merge or enable auto-merge.
 

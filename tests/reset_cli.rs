@@ -193,7 +193,7 @@ fn reset_preview_with_no_state_creates_no_lock_files() {
         .command()
         .assert()
         .success()
-        .stdout(predicate::str::contains("no Factory state exists"));
+        .stdout(predicate::str::contains("no Flashy Factory state exists"));
 
     assert!(!fixture.scoped_ledger.join("factory.sqlite3.lock").exists());
     assert!(!fixture.legacy_ledger.join("factory.sqlite3.lock").exists());
@@ -215,7 +215,7 @@ fn reset_preview_does_not_require_or_recreate_the_workspace_directory() {
         .command()
         .assert()
         .success()
-        .stdout(predicate::str::contains("no Factory state exists"));
+        .stdout(predicate::str::contains("no Flashy Factory state exists"));
     assert!(!workspace.exists());
 }
 
@@ -325,7 +325,9 @@ fn reset_rejects_a_symlinked_database_without_touching_its_target() {
         .arg("--confirm")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("non-regular Factory state file"));
+        .stderr(predicate::str::contains(
+            "non-regular Flashy Factory state file",
+        ));
     assert!(target.exists());
 }
 
@@ -352,7 +354,7 @@ impl Fixture {
             &repository,
             &["config", "user.email", "factory@example.test"],
         );
-        git(&repository, &["config", "user.name", "Factory Test"]);
+        git(&repository, &["config", "user.name", "Flashy Factory Test"]);
         fs::write(repository.join("README.md"), "fixture\n").unwrap();
         git(&repository, &["add", "README.md"]);
         git(&repository, &["commit", "-m", "fixture"]);

@@ -45,7 +45,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Prepare a trusted GitHub repository for Factory.
+    /// Prepare a trusted GitHub repository for Flashy Factory.
     Init {
         /// Repository to initialize. Defaults to the current directory.
         #[arg(long)]
@@ -64,7 +64,7 @@ enum Command {
         /// Evaluate schedules and poll once without executing eligible tasks.
         #[arg(long, conflicts_with = "workflow_id")]
         once: bool,
-        /// Path to the Factory configuration file.
+        /// Path to the Flashy Factory configuration file.
         #[arg(long, conflicts_with = "fleet")]
         config: Option<PathBuf>,
         /// Path to a fleet configuration file.
@@ -73,19 +73,19 @@ enum Command {
             conflicts_with_all = ["config", "data_directory", "workflow_id"]
         )]
         fleet: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long, conflicts_with_all = ["workflow_id", "fleet"])]
         data_directory: Option<PathBuf>,
     },
     /// Validate configuration, workflows, and configured GitHub Project IDs.
     Validate {
-        /// Path to the Factory configuration file.
+        /// Path to the Flashy Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
     },
     /// List resolved workflows without executing their prompts.
     Workflows {
-        /// Path to the Factory configuration file.
+        /// Path to the Flashy Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -99,10 +99,10 @@ enum Command {
         /// Print stable machine-readable JSON.
         #[arg(long)]
         json: bool,
-        /// Path to the Factory configuration file used to locate the data directory.
+        /// Path to the Flashy Factory configuration file used to locate the data directory.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
         /// Fleet configuration to inspect across repositories.
@@ -119,10 +119,10 @@ enum Command {
         /// Print stable machine-readable JSON.
         #[arg(long)]
         json: bool,
-        /// Path to the Factory configuration file used to locate the data directory.
+        /// Path to the Flashy Factory configuration file used to locate the data directory.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
         /// Fleet configuration to inspect across repositories.
@@ -138,10 +138,10 @@ enum Command {
         /// Print stable machine-readable JSON.
         #[arg(long)]
         json: bool,
-        /// Path to the Factory configuration file used to locate the data directory.
+        /// Path to the Flashy Factory configuration file used to locate the data directory.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
         /// Fleet configuration to inspect.
@@ -157,10 +157,10 @@ enum Command {
         /// Print stable machine-readable JSON.
         #[arg(long)]
         json: bool,
-        /// Path to the Factory configuration file used to locate the data directory.
+        /// Path to the Flashy Factory configuration file used to locate the data directory.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
         /// Fleet configuration containing the target repository.
@@ -170,16 +170,16 @@ enum Command {
         #[arg(long, requires = "fleet")]
         repository: Option<String>,
     },
-    /// Preview or confirm removal of one retained Factory worktree.
+    /// Preview or confirm removal of one retained Flashy Factory worktree.
     Cleanup {
         run_id: i64,
         /// Confirm removal after reviewing the preview. Dirty files are discarded.
         #[arg(long)]
         confirm: bool,
-        /// Path to the repository-local Factory configuration file.
+        /// Path to the repository-local Flashy Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the durable Factory database.
+        /// Directory containing the durable Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
         /// Fleet configuration containing the target repository.
@@ -245,10 +245,10 @@ enum Command {
         /// Remove state after reviewing the preview.
         #[arg(long)]
         confirm: bool,
-        /// Path to the repository-local Factory configuration file.
+        /// Path to the repository-local Flashy Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
-        /// Directory containing the repository-scoped Factory database.
+        /// Directory containing the repository-scoped Flashy Factory database.
         #[arg(long)]
         data_directory: Option<PathBuf>,
     },
@@ -263,7 +263,7 @@ enum WorkflowCommand {
         /// Repository to use. Defaults to the enclosing Git repository.
         #[arg(long)]
         repository: Option<PathBuf>,
-        /// Path to the Factory configuration file.
+        /// Path to the Flashy Factory configuration file.
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -551,7 +551,7 @@ async fn run_cli() -> Result<u8> {
                 let repository = required_fleet_repository(&fleet_config, repository)?.clone();
                 if confirm && !repository.enabled {
                     bail!(
-                        "repository {} is disabled; re-enable it and restart Factory before destructive cleanup",
+                        "repository {} is disabled; re-enable it and restart Flashy Factory before destructive cleanup",
                         repository.identity
                     );
                 }
@@ -684,7 +684,7 @@ async fn run_cli() -> Result<u8> {
             let data_directory = data_directory.unwrap_or_else(|| config.data_directory.clone());
             let mut databases = vec![("repository", data_directory.join(DATABASE_NAME))];
             let global = dirs::home_dir()
-                .context("could not determine Factory data directory")?
+                .context("could not determine Flashy Factory data directory")?
                 .join(".factory")
                 .join(DATABASE_NAME);
             push_reset_target(&mut databases, "legacy-global", global);
@@ -706,7 +706,7 @@ async fn run_cli() -> Result<u8> {
                 }
             }
             if existing.is_empty() {
-                println!("action: no Factory state exists; no changes made");
+                println!("action: no Flashy Factory state exists; no changes made");
                 return Ok(0);
             }
             for (kind, database) in &existing {
@@ -745,7 +745,7 @@ async fn run_cli() -> Result<u8> {
                         || !summary.retained_workspaces.is_empty())
                 {
                     bail!(
-                        "refusing to reset {kind} state while it owns active work or retained resources; stop Factory, finish or cancel active work, and clean retained runs first"
+                        "refusing to reset {kind} state while it owns active work or retained resources; stop Flashy Factory, finish or cancel active work, and clean retained runs first"
                     );
                 }
             }
@@ -906,7 +906,7 @@ fn cancellation_response(
             owner_kind: "factory-daemon",
             owner_pid: run.owner_pid,
             outcome: run.outcome,
-            message: "cancellation requested; the owning Factory daemon will stop the active process tree",
+            message: "cancellation requested; the owning Flashy Factory daemon will stop the active process tree",
         },
         CancellationRequest::AlreadyRequested(run) => CancellationResponse {
             repository: repository.map(str::to_owned),
@@ -915,7 +915,7 @@ fn cancellation_response(
             owner_kind: "factory-daemon",
             owner_pid: run.owner_pid,
             outcome: run.outcome,
-            message: "cancellation was already requested from the owning Factory daemon",
+            message: "cancellation was already requested from the owning Flashy Factory daemon",
         },
         CancellationRequest::Terminal(run) => CancellationResponse {
             repository: repository.map(str::to_owned),
@@ -933,7 +933,7 @@ fn cancellation_response(
             owner_kind: "stale-or-foreign",
             owner_pid: run.owner_pid,
             outcome: run.outcome,
-            message: "run has no live local Factory daemon owner; inspect or recover it before retrying cancellation",
+            message: "run has no live local Flashy Factory daemon owner; inspect or recover it before retrying cancellation",
         },
         CancellationRequest::NotFound => bail!("run {run_id} does not exist"),
     };
@@ -956,7 +956,7 @@ fn cleanup_run(
         .with_context(|| format!("task {} for run {run_id} does not exist", run.task_id))?;
     let workspace = ledger
         .task_workspace(task.id)?
-        .with_context(|| format!("run {run_id} has no Factory-owned workspace"))?;
+        .with_context(|| format!("run {run_id} has no Flashy Factory-owned workspace"))?;
     if let Some(repository) = expected_repository {
         if run.repository != repository
             || task.repository != repository
@@ -1252,7 +1252,10 @@ fn remove_database_files(database: &Path) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("failed to remove Factory state file {}", path.display())
+                    format!(
+                        "failed to remove Flashy Factory state file {}",
+                        path.display()
+                    )
                 });
             }
         }
@@ -1285,7 +1288,7 @@ fn state_file_exists(path: &Path) -> Result<bool> {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect Factory state {}", path.display())),
+            .with_context(|| format!("failed to inspect Flashy Factory state {}", path.display())),
     }
 }
 
@@ -1300,11 +1303,15 @@ fn push_reset_target(
 }
 
 fn validate_regular_state_file(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect Factory state file {}", path.display()))?;
+    let metadata = fs::symlink_metadata(path).with_context(|| {
+        format!(
+            "failed to inspect Flashy Factory state file {}",
+            path.display()
+        )
+    })?;
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
         bail!(
-            "refusing to use non-regular Factory state file {}",
+            "refusing to use non-regular Flashy Factory state file {}",
             path.display()
         );
     }
@@ -1348,7 +1355,11 @@ async fn run_poller(
     let path = resolve_config_path(config_path)?;
     let mode = if once { "once" } else { "continuous" };
     write_stderr_best_effort(
-        format!("Factory starting: mode={mode} config={}\n", path.display()).as_bytes(),
+        format!(
+            "Flashy Factory starting: mode={mode} config={}\n",
+            path.display()
+        )
+        .as_bytes(),
     );
     let config = Config::load(&path)?;
     ensure_no_unscoped_ledger_overlap()?;
@@ -1358,7 +1369,7 @@ async fn run_poller(
     if !once && ticket_validation.is_err() {
         for entry in catalog.invalid_scheduled_entries() {
             eprintln!(
-                "Factory skipped invalid scheduled workflow {}: {}",
+                "Flashy Factory skipped invalid scheduled workflow {}: {}",
                 entry.path.display(),
                 entry.errors.join("; ")
             );
@@ -1367,7 +1378,7 @@ async fn run_poller(
     ticket_validation?;
     write_stderr_best_effort(
         format!(
-            "Factory loaded: repositories={} workflows={} data={} poll_every={}\n",
+            "Flashy Factory loaded: repositories={} workflows={} data={} poll_every={}\n",
             config.repositories.len(),
             catalog.entries.len(),
             data_directory.display(),
@@ -1377,7 +1388,9 @@ async fn run_poller(
     );
     let ledger = Ledger::open_in(&data_directory)?;
     if once {
-        write_stderr_best_effort(b"Factory evaluating schedules and polling the source once...\n");
+        write_stderr_best_effort(
+            b"Flashy Factory evaluating schedules and polling the source once...\n",
+        );
         let daemon = FactoryDaemon::new(config, catalog, ledger.path());
         let report = daemon.evaluate_once(CancellationToken::new()).await?;
         write_stdout_best_effort(
@@ -1401,14 +1414,14 @@ async fn run_poller(
     let daemon = FactoryDaemon::new(config, catalog, ledger.path());
     daemon.run(cancellation).await?;
     signal_task.abort();
-    write_stderr_best_effort(b"Factory stopped.\n");
+    write_stderr_best_effort(b"Flashy Factory stopped.\n");
     Ok(0)
 }
 
 async fn run_fleet_once(path: &Path) -> Result<u8> {
     write_stderr_best_effort(
         format!(
-            "Factory starting: mode=fleet-once config={}\n",
+            "Flashy Factory starting: mode=fleet-once config={}\n",
             path.display()
         )
         .as_bytes(),
@@ -1432,7 +1445,7 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                     ) {
                         write_stderr_best_effort(
                             format!(
-                                "Factory disabled repository reconciliation failed for {}: {}\n",
+                                "Flashy Factory disabled repository reconciliation failed for {}: {}\n",
                                 repository.identity,
                                 single_line_error(&error)
                             )
@@ -1452,7 +1465,7 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                 Ok(_) => {}
                 Err(error) => write_stderr_best_effort(
                     format!(
-                        "Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
+                        "Flashy Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
                         repository.identity,
                         single_line_error(&error)
                     )
@@ -1555,7 +1568,7 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                         failures += 1;
                         write_stderr_best_effort(
                             format!(
-                                "Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
+                                "Flashy Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
                                 repository.identity,
                                 snapshot,
                                 single_line_error(&error)
@@ -1611,7 +1624,7 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
                         failures += 1;
                         write_stderr_best_effort(
                             format!(
-                                "Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
+                                "Flashy Factory could not persist operator snapshot: repository={} snapshot={} error={}\n",
                                 repository.identity,
                                 snapshot,
                                 single_line_error(&snapshot_error)
@@ -1639,7 +1652,7 @@ async fn run_fleet_once(path: &Path) -> Result<u8> {
 async fn run_fleet(path: &Path) -> Result<u8> {
     write_stderr_best_effort(
         format!(
-            "Factory starting: mode=fleet-continuous config={}\n",
+            "Flashy Factory starting: mode=fleet-continuous config={}\n",
             path.display()
         )
         .as_bytes(),
@@ -1666,7 +1679,7 @@ async fn run_fleet(path: &Path) -> Result<u8> {
                     ) {
                         write_stderr_best_effort(
                             format!(
-                                "Factory disabled repository reconciliation failed for {}: {}\n",
+                                "Flashy Factory disabled repository reconciliation failed for {}: {}\n",
                                 repository.identity,
                                 single_line_error(&error)
                             )
@@ -1686,7 +1699,7 @@ async fn run_fleet(path: &Path) -> Result<u8> {
                 Ok(_) => {}
                 Err(error) => write_stderr_best_effort(
                     format!(
-                        "Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
+                        "Flashy Factory could not locate disabled repository {} for non-destructive reconciliation: {}\n",
                         repository.identity,
                         single_line_error(&error)
                     )
@@ -1723,7 +1736,7 @@ async fn run_fleet(path: &Path) -> Result<u8> {
     }
     if invalid > 0 {
         write_stderr_best_effort(
-            format!("Factory fleet continuing with {invalid} invalid repository entries.\n")
+            format!("Flashy Factory fleet continuing with {invalid} invalid repository entries.\n")
                 .as_bytes(),
         );
     }
@@ -1740,7 +1753,7 @@ async fn run_fleet(path: &Path) -> Result<u8> {
         .run(cancellation)
         .await?;
     signal_task.abort();
-    write_stderr_best_effort(b"Factory fleet stopped.\n");
+    write_stderr_best_effort(b"Flashy Factory fleet stopped.\n");
     Ok(0)
 }
 
@@ -1754,11 +1767,11 @@ fn single_line_error(error: &anyhow::Error) -> String {
 fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
     let default_base = dirs::home_dir()
         .map(|home| home.join(".factory"))
-        .context("could not determine Factory data directory")?;
+        .context("could not determine Flashy Factory data directory")?;
     let global_database = default_base.join(DATABASE_NAME);
     if global_database.exists() {
         bail!(
-            "Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the global ledger before continuing",
+            "Flashy Factory found a global ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Flashy Factory process, finish or cancel its work, then archive the global ledger before continuing",
             global_database.display()
         );
     }
@@ -1768,7 +1781,7 @@ fn ensure_no_unscoped_ledger_overlap() -> Result<()> {
     };
     if unscoped_database.exists() {
         bail!(
-            "Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
+            "Flashy Factory found an unscoped ledger at {} and refused to start repository-scoped state because old queued or running work could overlap; stop the old Flashy Factory process, finish or cancel its work, then archive the unscoped ledger before using this data root",
             unscoped_database.display()
         );
     }
@@ -1862,7 +1875,7 @@ async fn run_workflow(
     let catalog = WorkflowCatalog::load(&config)?;
     let repository = repository
         .or_else(|| config.repositories.first().map(PathBuf::as_path))
-        .context("Factory configuration has no repository")?;
+        .context("Flashy Factory configuration has no repository")?;
     let workflow = ResolvedWorkflow::resolve(&config, &catalog, workflow_id, repository)?;
     if matches!(mode, WorkflowRunMode::ScheduledOnly) {
         let entry = catalog

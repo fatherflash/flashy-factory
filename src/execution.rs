@@ -32,7 +32,7 @@ impl ResolvedWorkflow {
         })?;
         if !config.repositories.contains(&repository) {
             bail!(
-                "repository {} does not match the repository-local Factory configuration",
+                "repository {} does not match the repository-local Flashy Factory configuration",
                 repository.display()
             );
         }
@@ -90,7 +90,7 @@ impl ResolvedWorkflow {
 
 fn compose_prompt(id: &str, workflow_prompt: &str, repository: &Path) -> String {
     format!(
-        "# Factory workflow\n\n{workflow_prompt}\n\n\
+        "# Flashy Factory workflow\n\n{workflow_prompt}\n\n\
          # Resolved target\n\n\
          Workflow: {id}\n\
          Repository: {}\n\

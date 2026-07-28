@@ -1,11 +1,11 @@
 # Security Policy
 
-Factory launches coding agents with access to repositories, developer tools,
+Flashy Factory launches coding agents with access to repositories, developer tools,
 and credentials. Treat its trust and isolation boundaries as security-sensitive.
 
 ## Supported versions
 
-Factory is under active development and has not reached a stable release. Only
+Flashy Factory is under active development and has not reached a stable release. Only
 the latest commit on `main` receives security fixes.
 
 ## Reporting a vulnerability

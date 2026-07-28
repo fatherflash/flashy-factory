@@ -21,17 +21,3 @@ type = "source"
 state = "Ready To Implement"
 workflow = ".factory/workflows/implement.md"
 timeout = "4h"
-
-[trigger.classify-tickets]
-type = "schedule"
-schedule = "0 8 * * *"
-timezone = "Europe/London"
-workflow = ".factory/workflows/classify-tickets.md"
-timeout = "2h"
-
-[trigger.bug-finder]
-type = "schedule"
-schedule = "0 9 * * 1"
-timezone = "Europe/London"
-workflow = ".factory/workflows/bug-finder.md"
-timeout = "2h"

@@ -460,7 +460,7 @@ fn disabled_repository_records_orphan_recovery_without_launch_or_cleanup() {
     .unwrap();
     fs::write(
         disabled.join(".factory/config.toml"),
-        "this is no longer valid Factory configuration\n",
+        "this is no longer valid Flashy Factory configuration\n",
     )
     .unwrap();
     assert!(

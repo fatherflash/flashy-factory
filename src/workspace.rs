@@ -128,7 +128,7 @@ impl WorkspaceManager {
         if let Some(path) = self.worktree_for_branch(&branch)? {
             if reuse == DeliveryReuse::Reject {
                 bail!(
-                    "Factory branch {branch} already has a worktree; a new task cannot adopt prior or unowned Git state"
+                    "Flashy Factory branch {branch} already has a worktree; a new task cannot adopt prior or unowned Git state"
                 );
             }
             self.ensure_managed_path(&path)?;
@@ -151,14 +151,14 @@ impl WorkspaceManager {
         if self.branch_exists(&branch)? {
             if reuse == DeliveryReuse::Reject {
                 bail!(
-                    "Factory branch {branch} already exists; inspect or remove it before approving a new task"
+                    "Flashy Factory branch {branch} already exists; inspect or remove it before approving a new task"
                 );
             }
             if reuse == DeliveryReuse::ExactBase
                 && self.resolve_commit(&format!("refs/heads/{branch}"))? != base_sha
             {
                 bail!(
-                    "Factory branch {branch} does not match the reserved base; refusing stale or unowned recovery state"
+                    "Flashy Factory branch {branch} does not match the reserved base; refusing stale or unowned recovery state"
                 );
             }
             // Preserve an owned recovery branch exactly as it is.
@@ -621,7 +621,7 @@ mod tests {
             fs::create_dir(&root).unwrap();
             run(&repository, ["init", "-b", "main"]);
             run(&repository, ["config", "user.email", "factory@example.com"]);
-            run(&repository, ["config", "user.name", "Factory"]);
+            run(&repository, ["config", "user.name", "Flashy Factory"]);
             fs::write(repository.join("README.md"), "factory\n").unwrap();
             run(&repository, ["add", "README.md"]);
             run(&repository, ["commit", "-m", "initial"]);

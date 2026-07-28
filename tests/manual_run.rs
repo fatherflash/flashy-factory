@@ -428,12 +428,12 @@ printf 'Verbose workflow complete.' > "$output"
                     child.wait().unwrap();
                 }
             }
-            panic!("Factory runs hung while shared stdout and stderr were full and unread");
+            panic!("Flashy Factory runs hung while shared stdout and stderr were full and unread");
         }
         thread::sleep(Duration::from_millis(10));
     }
 
     for status in statuses.into_iter().flatten() {
-        assert!(status.success(), "Factory exited with {status}");
+        assert!(status.success(), "Flashy Factory exited with {status}");
     }
 }

@@ -1,10 +1,10 @@
 # Use Jira as a source
 
-Factory v1 officially supports one GitHub source. This repository also includes
-a Jira adapter backed by `jiractrl` and `jq` to demonstrate the source adapter
-contract. The adapter asks Jira for only issues matching the trigger's exact
-state and labels. As with the GitHub adapter, it does not filter by author —
-restrict trust to people who can label issues in the target Jira project.
+This Flashy Factory fork uses Asana by default. It retains a Jira adapter backed
+by `jiractrl` and `jq` to demonstrate the provider-neutral source contract. The
+adapter asks Jira for only issues matching the trigger's exact state and
+labels. It does not filter by author; restrict trust to people who can label
+issues in the target Jira project.
 
 ## Authenticate
 
@@ -21,7 +21,7 @@ put it in issue content, logs, or workflow files.
 
 ## Configure the adapter
 
-Copy the Jira workflow examples into Factory's executable workflow directory:
+Copy the Jira workflow examples into Flashy Factory's executable workflow directory:
 
 ```sh
 cp examples/jira-triage.md .factory/workflows/jira-triage.md
@@ -59,11 +59,11 @@ The adapter builds bounded JQL such as:
 project = "SPS" AND status = "Ready To Implement" AND labels = "factory-ready"
 ```
 
-Factory passes only the Jira key, such as `SPS-123`, to the worker. The example
+Flashy Factory passes only the Jira key, such as `SPS-123`, to the worker. The example
 Jira workflows tell the agent to fetch, comment, update, and transition the
 live ticket with `jiractrl`; `git` and `gh` remain responsible for code and pull
-requests. Their source templates live under `examples/`, so the default
-`.factory/workflows` directory stays limited to the three GitHub workflows.
+requests. Their source templates live under `examples/`; the default
+`.factory/workflows` directory is tailored to Asana.
 
 ## Worker requirements
 
@@ -73,6 +73,6 @@ Docker worker would also need `jiractrl` in its image and an explicit Jira
 credential mount or environment policy. That environment is not included in
 this example.
 
-Read the [runnable guide](local-v1.md) for the complete Factory configuration
+Read the [runnable guide](local-v1.md) for the complete Flashy Factory configuration
 and the [source adapter contract](local-v1.md#source-adapter-contract) that the
 Jira script implements.

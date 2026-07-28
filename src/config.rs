@@ -209,7 +209,7 @@ impl Config {
             .context("configuration path has no parent directory")?;
         if config_dir.file_name().and_then(|name| name.to_str()) != Some(".factory") {
             bail!(
-                "Factory v1 requires repository-local configuration at <git-root>/.factory/config.toml; legacy global configuration is not executable"
+                "Flashy Factory v1 requires repository-local configuration at <git-root>/.factory/config.toml; legacy global configuration is not executable"
             );
         }
         let repository = config_dir
@@ -218,7 +218,7 @@ impl Config {
         let expected = repository_config_path(repository);
         if path != expected {
             bail!(
-                "Factory repository configuration must be {}; got {}",
+                "Flashy Factory repository configuration must be {}; got {}",
                 expected.display(),
                 path.display()
             );
@@ -231,14 +231,14 @@ impl Config {
             allow_missing_workspace,
             data_home,
         )
-        .with_context(|| format!("invalid Factory configuration in {}", path.display()))
+        .with_context(|| format!("invalid Flashy Factory configuration in {}", path.display()))
     }
 
     pub(crate) fn validate_candidate(contents: &str, repository: &Path) -> Result<Self> {
         let raw: RawConfig =
             toml::from_str(contents).context("failed to parse candidate config")?;
         Self::resolve_with_workspace_probe(raw, repository, |_| Ok(()), true, None)
-            .context("invalid candidate Factory configuration")
+            .context("invalid candidate Flashy Factory configuration")
     }
 
     fn resolve_with_workspace_probe<F>(
@@ -811,7 +811,7 @@ fn repository_data_directory_for_resolved_identity(
         Some(base) => resolve_data_base(base.clone())?,
         None => dirs::home_dir()
             .map(|path| path.join(".factory"))
-            .context("could not determine Factory data directory")?,
+            .context("could not determine Flashy Factory data directory")?,
     };
     let data_directory = base.join(digest);
     if configured_base.is_some() {
@@ -821,7 +821,7 @@ fn repository_data_directory_for_resolved_identity(
         let previous_directory = previous_base.join(digest);
         if previous_directory.join(DATABASE_NAME).exists() {
             bail!(
-                "Factory found repository state at the previous default {} and refused to use {} because abandoning the previous ledger could repeat durable work; set FACTORY_DATA_HOME={} to keep using the existing state, or archive the previous ledger before choosing the new default",
+                "Flashy Factory found repository state at the previous default {} and refused to use {} because abandoning the previous ledger could repeat durable work; set FACTORY_DATA_HOME={} to keep using the existing state, or archive the previous ledger before choosing the new default",
                 previous_directory.display(),
                 data_directory.display(),
                 previous_base.display()
@@ -915,7 +915,7 @@ pub(crate) fn ensure_primary_checkout(repository: &Path) -> Result<()> {
         .canonicalize()
         .context("failed to resolve common Git directory")?;
     if git_dir != common_dir {
-        bail!("Factory must run from the primary checkout, not a linked Git worktree");
+        bail!("Flashy Factory must run from the primary checkout, not a linked Git worktree");
     }
     Ok(())
 }
