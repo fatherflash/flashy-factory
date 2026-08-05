@@ -61,6 +61,7 @@ fn fixture() -> (
             identity: "example/repository".to_owned(),
         },
         poll_every: Duration::from_millis(10),
+        pull_request_reconcile_every: Duration::from_secs(60),
         default_runtime: "codex".into(),
         default_timeout: Duration::from_secs(60),
         maximum_timeout: Duration::from_secs(300),
