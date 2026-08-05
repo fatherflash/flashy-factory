@@ -67,11 +67,13 @@ impl Fixture {
             data_directory: temp.path().join("data"),
             execution_mode: ExecutionMode::Worktree,
             worker: None,
+            agent_profiles: std::collections::BTreeMap::from([("test".to_owned(), factory::config::AgentProfile { model: "gpt-5.3-codex".to_owned(), reasoning_effort: "high".to_owned(), service_tier: "priority".to_owned() })]),
             triggers: vec![TriggerConfig {
                 id: "implement".to_owned(),
                 workflow,
                 timeout: Duration::from_secs(120),
                 kind: TriggerKind::Label("agent:ready".to_owned()),
+                agent_profile: "test".to_owned(),
             }],
             source: Some(SourceConfig {
                 command: Vec::new(),

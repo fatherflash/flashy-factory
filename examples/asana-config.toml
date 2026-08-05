@@ -12,17 +12,29 @@ max_concurrent = 1
 [source]
 command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
+[agent_profile.specification]
+model = "gpt-5.3-codex"
+reasoning_effort = "high"
+service_tier = "priority"
+
+[agent_profile.implementation]
+model = "gpt-5.3-codex"
+reasoning_effort = "xhigh"
+service_tier = "priority"
+
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
 labels = ["factory:auto-to-pr"]
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "specification"
 
 [trigger.triage-manual]
 type = "source"
 state = "Ready For Spec"
 labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "specification"
 
 [trigger.implement]
 type = "source"
@@ -30,12 +42,14 @@ state = "Ready To Implement"
 labels = ["factory:auto-to-pr"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
+agent_profile = "implementation"
 
 [trigger.reconcile-dependencies]
 type = "source"
 state = "Approved - Waiting On Dependencies"
 labels = ["factory:auto-to-pr"]
 workflow = ".flashy-factory/workflows/reconcile-dependencies.md"
+agent_profile = "specification"
 
 [trigger.implement-manual]
 type = "source"
@@ -43,3 +57,4 @@ state = "Ready To Implement"
 labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
+agent_profile = "implementation"

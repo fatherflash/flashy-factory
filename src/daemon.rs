@@ -18,7 +18,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::clone::CloneManager;
-use crate::config::{Config, SourceConfig};
+use crate::config::{AgentProfile, Config, SourceConfig};
 use crate::fleet::{
     RepositoryHealth, RepositoryRuntime, delay_to_next_poll, repository_backoff,
     resolve_rate_limit_delay,
@@ -292,6 +292,7 @@ struct WorkflowTarget {
     runtime: String,
     timeout: Duration,
     trigger: Trigger,
+    agent_profile: (String, AgentProfile),
 }
 
 #[derive(Clone)]
@@ -2223,6 +2224,7 @@ fn resolve_workflow_target(entry: &WorkflowEntry) -> Option<(String, WorkflowTar
             runtime: entry.runtime.clone()?,
             timeout: entry.timeout?,
             trigger: entry.trigger.clone()?,
+            agent_profile: entry.agent_profile.clone()?,
         },
     ))
 }
@@ -2323,6 +2325,13 @@ async fn dispatch_available(
             .get(&task.workflow)
             .context("claimed workflow is not configured")?
             .clone();
+        worker_ledger.set_run_agent_profile(
+            run_id,
+            &workflow.agent_profile.0,
+            &workflow.agent_profile.1.model,
+            &workflow.agent_profile.1.reasoning_effort,
+            &workflow.agent_profile.1.service_tier,
+        )?;
         let prior_session = worker_ledger.latest_session(
             &task.repository,
             &task.workflow,
@@ -3231,6 +3240,7 @@ async fn execute_task_inner(
                 &prompt,
                 &repository.path,
                 workflow.timeout,
+                Some(&workflow.agent_profile.1),
                 run_cancellation.clone(),
                 Some(session_id),
                 observations.clone(),
@@ -3291,6 +3301,7 @@ async fn execute_task_inner(
                         &fallback_prompt,
                         &repository.path,
                         remaining,
+                        Some(&workflow.agent_profile.1),
                         run_cancellation.clone(),
                         None,
                         observations.clone(),
@@ -3309,6 +3320,7 @@ async fn execute_task_inner(
                 &prompt,
                 &repository.path,
                 workflow.timeout,
+                Some(&workflow.agent_profile.1),
                 run_cancellation.clone(),
                 None,
                 observations.clone(),
@@ -4884,6 +4896,7 @@ mod tests {
             _prompt: &str,
             working_directory: &Path,
             _run_timeout: Duration,
+            _agent_profile: Option<&AgentProfile>,
             _cancellation: CancellationToken,
             _resume_session: Option<&str>,
             _observations: tokio::sync::watch::Sender<RuntimeObservation>,
@@ -4974,6 +4987,7 @@ mod tests {
                 expression: "*/10 * * * *".to_owned(),
                 timezone: chrono_tz::UTC,
             },
+            agent_profile: ("test".into(), AgentProfile { model: "gpt-5.3-codex".into(), reasoning_effort: "high".into(), service_tier: "priority".into() }),
         };
         let scheduled = Task {
             id: 1,
@@ -5103,6 +5117,7 @@ mod tests {
             data_directory: second_data,
             execution_mode: crate::config::ExecutionMode::Worktree,
             worker: None,
+            agent_profiles: Default::default(),
             triggers: Vec::new(),
             source: None,
         };
@@ -5197,6 +5212,7 @@ mod tests {
                             expression: expression.to_owned(),
                             timezone,
                         },
+                        agent_profile: ("test".into(), AgentProfile { model: "gpt-5.3-codex".into(), reasoning_effort: "high".into(), service_tier: "priority".into() }),
                     },
                 )]),
             },
@@ -5491,6 +5507,10 @@ mod tests {
             base_sha: None,
             factory_branch: None,
             workspace_kind: None,
+            agent_profile: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
         };
 
         let prompt = recovery_prompt("base", &previous, &target);
@@ -5955,6 +5975,7 @@ mod tests {
                     expression: "0 * * * *".into(),
                     timezone: chrono_tz::UTC,
                 },
+                agent_profile: ("test".into(), AgentProfile { model: "gpt-5.3-codex".into(), reasoning_effort: "high".into(), service_tier: "priority".into() }),
             };
             let target = RepositoryTarget {
                 path: repository.clone(),

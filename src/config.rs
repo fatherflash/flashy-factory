@@ -36,6 +36,7 @@ pub struct Config {
     pub data_directory: PathBuf,
     pub execution_mode: ExecutionMode,
     pub worker: Option<WorkerConfig>,
+    pub agent_profiles: BTreeMap<String, AgentProfile>,
     pub triggers: Vec<TriggerConfig>,
     pub source: Option<SourceConfig>,
 }
@@ -52,6 +53,16 @@ pub struct TriggerConfig {
     pub workflow: PathBuf,
     pub timeout: Duration,
     pub kind: TriggerKind,
+    pub agent_profile: String,
+}
+
+/// Repository-owned Codex invocation settings. These are passed per process and
+/// never written to the operator's Codex configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentProfile {
+    pub model: String,
+    pub reasoning_effort: String,
+    pub service_tier: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,8 +137,18 @@ struct RawConfig {
     repository: Option<RawRepositoryConfig>,
     worker: RawWorkerConfig,
     source: RawSourceConfig,
+    #[serde(rename = "agent_profile")]
+    agent_profiles: BTreeMap<String, RawAgentProfile>,
     #[serde(rename = "trigger")]
     triggers: BTreeMap<String, RawTriggerConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAgentProfile {
+    model: String,
+    reasoning_effort: String,
+    service_tier: String,
 }
 
 fn default_pull_request_reconcile_every() -> String {
@@ -177,22 +198,26 @@ enum RawTriggerConfig {
         labels: Vec<String>,
         workflow: String,
         timeout: Option<String>,
+        agent_profile: String,
     },
     Status {
         status: String,
         workflow: String,
         timeout: Option<String>,
+        agent_profile: String,
     },
     Label {
         label: String,
         workflow: String,
         timeout: Option<String>,
+        agent_profile: String,
     },
     Schedule {
         schedule: String,
         timezone: String,
         workflow: String,
         timeout: Option<String>,
+        agent_profile: String,
     },
 }
 
@@ -323,8 +348,14 @@ impl Config {
         let repository = canonical_directory("repository", repository, repository)?;
         ensure_primary_checkout(&repository)?;
         let repository_config = resolve_repository_config(raw.repository, &repository)?;
-        let triggers =
-            resolve_triggers(raw.triggers, &repository, default_timeout, maximum_timeout)?;
+        let agent_profiles = resolve_agent_profiles(raw.agent_profiles)?;
+        let triggers = resolve_triggers(
+            raw.triggers,
+            &repository,
+            default_timeout,
+            maximum_timeout,
+            &agent_profiles,
+        )?;
         let data_home = match data_home {
             Some(data_home) => Some(data_home),
             None => configured_data_home()?,
@@ -371,6 +402,7 @@ impl Config {
             data_directory,
             execution_mode,
             worker,
+            agent_profiles,
             triggers,
             source: Some(source),
         })
@@ -402,6 +434,13 @@ impl fmt::Display for Config {
             humantime::format_duration(self.pull_request_reconcile_every)
         )?;
         writeln!(formatter, "worker.runtime: {}", self.default_runtime)?;
+        for (name, profile) in &self.agent_profiles {
+            writeln!(
+                formatter,
+                "agent_profile.{name}: model={} reasoning_effort={} service_tier={}",
+                profile.model, profile.reasoning_effort, profile.service_tier
+            )?;
+        }
         writeln!(
             formatter,
             "worker.timeout: {}",
@@ -556,6 +595,7 @@ fn resolve_triggers(
     repository: &Path,
     default_timeout: Duration,
     maximum_timeout: Duration,
+    agent_profiles: &BTreeMap<String, AgentProfile>,
 ) -> Result<Vec<TriggerConfig>> {
     if raw.is_empty() {
         bail!("configuration must contain at least one [trigger.<id>] table");
@@ -563,12 +603,13 @@ fn resolve_triggers(
     raw.into_iter()
         .map(|(id, trigger)| {
             validate_trigger_id(&id)?;
-            let (workflow, timeout, kind) = match trigger {
+            let (workflow, timeout, kind, agent_profile) = match trigger {
                 RawTriggerConfig::Source {
                     state,
                     labels,
                     workflow,
                     timeout,
+                    agent_profile,
                 } => {
                     let state = validate_display_name(&format!("trigger.{id}.state"), state)?;
                     let mut resolved_labels = Vec::with_capacity(labels.len());
@@ -585,12 +626,14 @@ fn resolve_triggers(
                             state,
                             labels: resolved_labels,
                         },
+                        agent_profile,
                     )
                 }
                 RawTriggerConfig::Status {
                     status,
                     workflow,
                     timeout,
+                    agent_profile,
                 } => (
                     workflow,
                     timeout,
@@ -598,21 +641,25 @@ fn resolve_triggers(
                         &format!("trigger.{id}.status"),
                         status,
                     )?),
+                    agent_profile,
                 ),
                 RawTriggerConfig::Label {
                     label,
                     workflow,
                     timeout,
+                    agent_profile,
                 } => (
                     workflow,
                     timeout,
                     TriggerKind::Label(validate_label(&format!("trigger.{id}.label"), label)?),
+                    agent_profile,
                 ),
                 RawTriggerConfig::Schedule {
                     schedule,
                     timezone,
                     workflow,
                     timeout,
+                    agent_profile,
                 } => {
                     let schedule = schedule.trim();
                     if schedule.split_whitespace().count() != 5
@@ -631,9 +678,12 @@ fn resolve_triggers(
                             expression: schedule.to_owned(),
                             timezone: timezone.to_owned(),
                         },
+                        agent_profile,
                     )
                 }
             };
+            let agent_profile =
+                validate_agent_profile_reference(&id, &agent_profile, agent_profiles)?;
             let timeout = timeout
                 .as_deref()
                 .map(|value| parse_positive_duration(&format!("trigger.{id}.timeout"), value))
@@ -651,9 +701,82 @@ fn resolve_triggers(
                 id,
                 timeout,
                 kind,
+                agent_profile,
             })
         })
         .collect()
+}
+
+fn resolve_agent_profiles(
+    raw: BTreeMap<String, RawAgentProfile>,
+) -> Result<BTreeMap<String, AgentProfile>> {
+    if raw.is_empty() {
+        bail!("configuration must contain at least one [agent_profile.<name>] table");
+    }
+    raw.into_iter()
+        .map(|(name, profile)| {
+            validate_agent_profile_name(&name)?;
+            let model = validate_agent_profile_value(
+                &format!("agent_profile.{name}.model"),
+                profile.model,
+            )?;
+            let reasoning_effort = profile.reasoning_effort.trim().to_ascii_lowercase();
+            if !matches!(
+                reasoning_effort.as_str(),
+                "low" | "medium" | "high" | "xhigh"
+            ) {
+                bail!(
+                    "agent_profile.{name}.reasoning_effort must be one of low, medium, high, xhigh"
+                );
+            }
+            let service_tier = profile.service_tier.trim().to_ascii_lowercase();
+            if !matches!(service_tier.as_str(), "default" | "flex" | "priority") {
+                bail!("agent_profile.{name}.service_tier must be one of default, flex, priority");
+            }
+            Ok((
+                name,
+                AgentProfile {
+                    model,
+                    reasoning_effort,
+                    service_tier,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn validate_agent_profile_name(name: &str) -> Result<()> {
+    validate_trigger_id(name).map_err(|_| {
+        anyhow::anyhow!("agent profile name must be lowercase kebab-case, got {name:?}")
+    })
+}
+fn validate_agent_profile_value(field: &str, value: String) -> Result<String> {
+    let value = value.trim().to_owned();
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        bail!(
+            "{field} must be a non-empty model identifier containing only letters, digits, '.', '_' or '-'"
+        );
+    }
+    Ok(value)
+}
+fn validate_agent_profile_reference(
+    id: &str,
+    name: &str,
+    profiles: &BTreeMap<String, AgentProfile>,
+) -> Result<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("trigger.{id}.agent_profile must not be empty");
+    }
+    if !profiles.contains_key(name) {
+        bail!("trigger.{id}.agent_profile {name:?} does not name a configured agent profile");
+    }
+    Ok(name.to_owned())
 }
 
 fn validate_trigger_id(id: &str) -> Result<()> {

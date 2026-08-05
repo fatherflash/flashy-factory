@@ -71,6 +71,7 @@ fn fixture() -> (
         data_directory: temp.path().join("data"),
         execution_mode: ExecutionMode::Worktree,
         worker: None,
+        agent_profiles: std::collections::BTreeMap::from([("test".to_owned(), factory::config::AgentProfile { model: "gpt-5.3-codex".to_owned(), reasoning_effort: "high".to_owned(), service_tier: "priority".to_owned() })]),
         triggers: vec![TriggerConfig {
             id: "implement".into(),
             workflow,
@@ -79,6 +80,7 @@ fn fixture() -> (
                 state: "Ready To Implement".into(),
                 labels: vec!["factory:ready".into()],
             },
+            agent_profile: "test".to_owned(),
         }],
         source: Some(SourceConfig {
             command: vec![source.display().to_string()],
