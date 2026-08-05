@@ -5,29 +5,59 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
+import http.client
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
 DEFAULT_API_BASE = "https://app.asana.com/api/1.0"
+DEFAULT_TOKEN_INFO_URL = "https://app.asana.com/-/token_info"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_TEXT_BYTES = 256 * 1024
 GID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+TASK_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
+BATCH_CREATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+MAX_BATCH_TASKS = 25
+MAX_TASK_RELATIONSHIPS = 30
+BACKLOG_SECTION = "Backlog"
+READY_FOR_SPEC_SECTION = "Ready For Spec"
+AUTHORIZATION_TAGS = {
+    "backlog_only": "factory:manual",
+    "autonomous_to_pr": "factory:auto-to-pr",
+}
+REQUIRED_BATCH_OAUTH_SCOPES = {
+    "projects:read",
+    "tags:read",
+    "tasks:read",
+    "tasks:write",
+}
+MINIMUM_OAUTH_LIFETIME_SECONDS = 300
+EXTERNAL_RECOVERY_ATTEMPTS = 3
+EXTERNAL_RECOVERY_INITIAL_DELAY_SECONDS = 0.25
 
 
 class ClientError(Exception):
     def __init__(
-        self, message: str, *, rate_limited: bool = False, retry_at: str | None = None
+        self,
+        message: str,
+        *,
+        rate_limited: bool = False,
+        retry_at: str | None = None,
+        status_code: int | None = None,
     ) -> None:
         super().__init__(message)
         self.rate_limited = rate_limited
         self.retry_at = retry_at
+        self.status_code = status_code
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -71,16 +101,130 @@ def read_text(path: str, field: str) -> str:
         raise ClientError(f"{field} must be UTF-8") from error
 
 
+def read_json(path: str, field: str) -> dict[str, Any]:
+    raw = read_text(path, field)
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise ClientError(f"{field} must contain valid JSON: {error.msg}") from error
+    if not isinstance(value, dict):
+        raise ClientError(f"{field} must contain a JSON object")
+    return value
+
+
+def reject_unknown_fields(
+    value: dict[str, Any], allowed: set[str], field: str
+) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ClientError(f"{field} contains unknown fields: {', '.join(unknown)}")
+
+
+def redacted_error(error: Exception) -> str:
+    message = str(error)
+    for name in ("ASANA_ACCESS_TOKEN", "ASANA_OAUTH_ACCESS_TOKEN"):
+        token = os.environ.get(name, "")
+        if token:
+            message = message.replace(token, "[REDACTED]")
+    return message
+
+
 class AsanaClient:
-    def __init__(self) -> None:
-        token = os.environ.get("ASANA_ACCESS_TOKEN", "").strip()
+    def __init__(self, *, oauth_required: bool = False) -> None:
+        self.oauth_required = oauth_required
+        if oauth_required:
+            if os.environ.get("ASANA_AUTH_MODE") != "oauth":
+                raise ClientError(
+                    "batch-create requires ASANA_AUTH_MODE=oauth"
+                )
+            token_name = "ASANA_OAUTH_ACCESS_TOKEN"
+            self.oauth_client_id = require_gid(
+                "ASANA_OAUTH_CLIENT_ID", os.environ.get("ASANA_OAUTH_CLIENT_ID")
+            )
+        else:
+            token_name = "ASANA_ACCESS_TOKEN"
+            self.oauth_client_id = None
+        token = os.environ.get(token_name, "").strip()
         if not token or any(char in token for char in "\r\n"):
-            raise ClientError("ASANA_ACCESS_TOKEN is required")
+            raise ClientError(f"{token_name} is required")
         self.token = token
         self.base_url = self._validated_base_url(
             os.environ.get("ASANA_API_BASE_URL", DEFAULT_API_BASE)
         )
         self.opener = urllib.request.build_opener(NoRedirectHandler())
+
+    def validate_batch_oauth(self) -> None:
+        if not self.oauth_required or self.oauth_client_id is None:
+            raise ClientError("batch-create requires a validated OAuth app identity")
+        token_info_url = self._validated_token_info_url(
+            os.environ.get("ASANA_TOKEN_INFO_URL", DEFAULT_TOKEN_INFO_URL)
+        )
+        body = urllib.parse.urlencode({"token": self.token}).encode("utf-8")
+        request = urllib.request.Request(
+            token_info_url,
+            data=body,
+            method="POST",
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "flashy-factory-asana/1",
+            },
+        )
+        try:
+            with self.opener.open(request, timeout=20) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+        except urllib.error.HTTPError as error:
+            raw = error.read(64 * 1024)
+            raise ClientError(
+                self._api_error(raw, f"Asana token introspection returned HTTP {error.code}"),
+                status_code=error.code,
+            ) from error
+        except urllib.error.URLError as error:
+            raise ClientError(
+                f"failed to reach Asana token introspection: {error.reason}"
+            ) from error
+        except (TimeoutError, http.client.HTTPException) as error:
+            raise ClientError(
+                f"Asana token introspection connection failed: {error}"
+            ) from error
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise ClientError("Asana token introspection response exceeded 2 MiB")
+        try:
+            payload = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ClientError("Asana token introspection returned invalid JSON") from error
+        if not isinstance(payload, dict):
+            raise ClientError("Asana token introspection returned invalid data")
+        if payload.get("active") is not True:
+            raise ClientError("ASANA_OAUTH_ACCESS_TOKEN is inactive")
+        if payload.get("token_type") != "bearer":
+            raise ClientError("ASANA_OAUTH_ACCESS_TOKEN is not a bearer token")
+        token_client_id = payload.get("client_id")
+        if isinstance(token_client_id, int) and not isinstance(token_client_id, bool):
+            token_client_id = str(token_client_id)
+        if token_client_id != self.oauth_client_id:
+            raise ClientError(
+                "ASANA_OAUTH_ACCESS_TOKEN does not belong to ASANA_OAUTH_CLIENT_ID"
+            )
+        expires_in = payload.get("expires_in")
+        if not isinstance(expires_in, (int, float)) or expires_in < MINIMUM_OAUTH_LIFETIME_SECONDS:
+            raise ClientError(
+                "ASANA_OAUTH_ACCESS_TOKEN must have at least five minutes remaining"
+            )
+        scope = payload.get("scope")
+        scopes = set(scope.split()) if isinstance(scope, str) else set()
+        missing_scopes = sorted(REQUIRED_BATCH_OAUTH_SCOPES - scopes)
+        if missing_scopes:
+            raise ClientError(
+                "ASANA_OAUTH_ACCESS_TOKEN is missing scopes: "
+                + ", ".join(missing_scopes)
+            )
+        unexpected_scopes = sorted(scopes - REQUIRED_BATCH_OAUTH_SCOPES)
+        if unexpected_scopes:
+            raise ClientError(
+                "ASANA_OAUTH_ACCESS_TOKEN has disallowed scopes: "
+                + ", ".join(unexpected_scopes)
+            )
 
     @staticmethod
     def _validated_base_url(value: str) -> str:
@@ -98,6 +242,22 @@ class AsanaClient:
                 "ASANA_ALLOW_INSECURE_LOCALHOST=1"
             )
         return value.rstrip("/")
+
+    @staticmethod
+    def _validated_token_info_url(value: str) -> str:
+        parsed = urllib.parse.urlparse(value)
+        is_official = value == DEFAULT_TOKEN_INFO_URL
+        is_test_loopback = (
+            parsed.scheme == "http"
+            and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            and os.environ.get("ASANA_ALLOW_INSECURE_LOCALHOST") == "1"
+        )
+        if not (is_official or is_test_loopback):
+            raise ClientError(
+                "ASANA_TOKEN_INFO_URL must be Asana's official HTTPS endpoint; "
+                "insecure HTTP is limited to loopback tests"
+            )
+        return value
 
     def request(
         self,
@@ -134,9 +294,12 @@ class AsanaClient:
                 message,
                 rate_limited=error.code == 429,
                 retry_at=retry_at,
+                status_code=error.code,
             ) from error
         except urllib.error.URLError as error:
             raise ClientError(f"failed to reach Asana API: {error.reason}") from error
+        except (TimeoutError, http.client.HTTPException) as error:
+            raise ClientError(f"Asana API connection failed: {error}") from error
         if len(raw) > MAX_RESPONSE_BYTES:
             raise ClientError("Asana API response exceeded 2 MiB")
         try:
@@ -214,6 +377,50 @@ def resolve_section(client: AsanaClient, project_gid: str, name: str) -> dict[st
     return matches[0]
 
 
+def configured_batch_section(
+    client: AsanaClient,
+    project_gid: str,
+    *,
+    section_environment: str,
+    witness_environment: str,
+    label: str,
+) -> str:
+    """Validate an explicitly configured section through an in-project witness task.
+
+    Listing project sections requires broader Asana permissions than the batch OAuth
+    app is allowed to hold.  A readable task membership is a narrow, project-bound
+    witness that prevents a configured GID from being used to mutate another project.
+    """
+    section_gid = require_gid(section_environment, os.environ.get(section_environment))
+    witness_gid = require_gid(witness_environment, os.environ.get(witness_environment))
+    payload = client.request(
+        "GET",
+        f"/tasks/{encoded_gid(witness_gid)}",
+        query={"opt_fields": "gid,memberships.project.gid,memberships.section.gid"},
+    )
+    witness = payload.get("data")
+    if not isinstance(witness, dict):
+        raise ClientError(f"{label} witness task returned invalid data")
+    memberships = witness.get("memberships")
+    if not isinstance(memberships, list):
+        memberships = []
+    matches = [
+        membership
+        for membership in memberships
+        if isinstance(membership, dict)
+        and isinstance(membership.get("project"), dict)
+        and isinstance(membership.get("section"), dict)
+        and membership["project"].get("gid") == project_gid
+        and membership["section"].get("gid") == section_gid
+    ]
+    if len(matches) != 1:
+        raise ClientError(
+            f"{label} witness task {witness_gid} must have exactly one membership "
+            f"in ASANA_PROJECT_GID {project_gid} and section {section_gid}"
+        )
+    return section_gid
+
+
 def resolve_tag(client: AsanaClient, workspace_gid: str, name: str) -> dict[str, Any]:
     tags = client.paginate(
         f"/workspaces/{encoded_gid(workspace_gid)}/tags", maximum=1000
@@ -226,6 +433,24 @@ def resolve_tag(client: AsanaClient, workspace_gid: str, name: str) -> dict[str,
         )
     require_gid("tag.gid", matches[0].get("gid"))
     return matches[0]
+
+
+def resolve_authorization_tags(
+    client: AsanaClient, workspace_gid: str
+) -> dict[str, str]:
+    tags = client.paginate(
+        f"/workspaces/{encoded_gid(workspace_gid)}/tags", maximum=1000
+    )
+    resolved: dict[str, str] = {}
+    for name in AUTHORIZATION_TAGS.values():
+        matches = [tag for tag in tags if tag.get("name") == name]
+        if len(matches) != 1:
+            raise ClientError(
+                f"Asana workspace must contain exactly one tag named {name!r}; "
+                f"found {len(matches)}"
+            )
+        resolved[name] = require_gid("tag.gid", matches[0].get("gid"))
+    return resolved
 
 
 def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -323,6 +548,8 @@ def task_in_project(
     project_gid: str,
     *,
     include_context: bool = False,
+    include_dependencies: bool = False,
+    include_authorization: bool = False,
 ) -> dict[str, Any]:
     fields = "gid,name,memberships.project.gid,memberships.project.name"
     if include_context:
@@ -331,6 +558,10 @@ def task_in_project(
             "created_by.name,tags.gid,tags.name,memberships.section.gid,"
             "memberships.section.name"
         )
+    if include_dependencies:
+        fields = f"{fields},dependencies.gid"
+    if include_authorization:
+        fields = f"{fields},tags.gid,memberships.section.gid"
     payload = client.request(
         "GET",
         f"/tasks/{encoded_gid(gid)}",
@@ -378,6 +609,884 @@ def create_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
             }
         ]
     return client.request("POST", "/tasks", data=data)
+
+
+def parse_batch_manifest(
+    manifest: dict[str, Any],
+) -> tuple[str, list[dict[str, Any]], list[tuple[str, str]]]:
+    reject_unknown_fields(
+        manifest,
+        {"batch_creation_id", "delivery_policy", "dependencies", "tasks"},
+        "batch manifest",
+    )
+    batch_creation_id = manifest.get("batch_creation_id")
+    if not isinstance(batch_creation_id, str) or not BATCH_CREATION_ID_PATTERN.fullmatch(
+        batch_creation_id
+    ):
+        raise ClientError(
+            "batch_creation_id must be a caller-supplied 1-128 character identifier"
+        )
+    delivery_policy = manifest.get("delivery_policy")
+    if delivery_policy not in AUTHORIZATION_TAGS:
+        raise ClientError(
+            "delivery_policy must be backlog_only or autonomous_to_pr"
+        )
+    raw_tasks = manifest.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise ClientError("tasks must be a non-empty array")
+    if len(raw_tasks) > MAX_BATCH_TASKS:
+        raise ClientError(f"a batch may contain at most {MAX_BATCH_TASKS} tasks")
+
+    tasks: list[dict[str, Any]] = []
+    references: set[str] = set()
+    for index, raw_task in enumerate(raw_tasks):
+        field = f"tasks[{index}]"
+        if not isinstance(raw_task, dict):
+            raise ClientError(f"{field} must be an object")
+        reject_unknown_fields(
+            raw_task,
+            {"ref", "name", "notes", "custom_fields"},
+            field,
+        )
+        reference = raw_task.get("ref")
+        if not isinstance(reference, str) or not TASK_REF_PATTERN.fullmatch(reference):
+            raise ClientError(
+                f"{field}.ref must be a 1-100 character task reference"
+            )
+        if reference in references:
+            raise ClientError(f"duplicate task reference {reference!r}")
+        references.add(reference)
+        name = raw_task.get("name")
+        if not isinstance(name, str):
+            raise ClientError(f"{field}.name must be a string")
+        task: dict[str, Any] = {
+            "ref": reference,
+            "name": require_name(f"{field}.name", name),
+        }
+        notes = raw_task.get("notes")
+        if notes is not None:
+            if not isinstance(notes, str):
+                raise ClientError(f"{field}.notes must be a string")
+            if len(notes.encode("utf-8")) > MAX_TEXT_BYTES:
+                raise ClientError(f"{field}.notes must not exceed {MAX_TEXT_BYTES} bytes")
+            task["notes"] = notes
+        custom_fields = raw_task.get("custom_fields")
+        if custom_fields is not None:
+            raise ClientError(
+                f"{field}.custom_fields is unavailable to narrow-scope batch-create; "
+                "it would require custom_fields:read"
+            )
+        tasks.append(task)
+
+    dependencies = manifest.get("dependencies")
+    edges: list[tuple[str, str]]
+    if dependencies == "independent":
+        edges = []
+    elif dependencies == "listed_chain":
+        edges = [
+            (tasks[index]["ref"], tasks[index - 1]["ref"])
+            for index in range(1, len(tasks))
+        ]
+    elif isinstance(dependencies, dict):
+        reject_unknown_fields(dependencies, {"mode", "edges"}, "dependencies")
+        if dependencies.get("mode") != "explicit_edges":
+            raise ClientError(
+                "dependencies.mode must be explicit_edges when dependencies is an object"
+            )
+        raw_edges = dependencies.get("edges")
+        if not isinstance(raw_edges, list):
+            raise ClientError("dependencies.edges must be an array")
+        edges = []
+        for index, raw_edge in enumerate(raw_edges):
+            field = f"dependencies.edges[{index}]"
+            if isinstance(raw_edge, str):
+                parts = [part.strip() for part in raw_edge.split("->")]
+                if len(parts) != 2 or not all(parts):
+                    raise ClientError(
+                        f"{field} must use the form 'dependent -> blocker'"
+                    )
+                dependent, blocker = parts
+            elif isinstance(raw_edge, dict):
+                reject_unknown_fields(raw_edge, {"dependent", "blocker"}, field)
+                dependent = raw_edge.get("dependent")
+                blocker = raw_edge.get("blocker")
+                if not isinstance(dependent, str) or not isinstance(blocker, str):
+                    raise ClientError(
+                        f"{field}.dependent and {field}.blocker must be strings"
+                    )
+            else:
+                raise ClientError(f"{field} must be a string or object")
+            if dependent not in references:
+                raise ClientError(f"{field} references unknown dependent {dependent!r}")
+            if blocker not in references:
+                raise ClientError(f"{field} references unknown blocker {blocker!r}")
+            if dependent == blocker:
+                raise ClientError(f"{field} is a self-dependency for {dependent!r}")
+            edges.append((dependent, blocker))
+    else:
+        raise ClientError(
+            "dependencies must be independent, listed_chain, or an explicit_edges object"
+        )
+
+    if len(set(edges)) != len(edges):
+        raise ClientError("dependencies contain a duplicate edge")
+    relationship_counts: dict[str, int] = defaultdict(int)
+    for dependent, blocker in edges:
+        relationship_counts[dependent] += 1
+        relationship_counts[blocker] += 1
+    for reference, count in relationship_counts.items():
+        if count > MAX_TASK_RELATIONSHIPS:
+            raise ClientError(
+                f"task {reference!r} has {count} dependencies and dependents; "
+                f"Asana permits at most {MAX_TASK_RELATIONSHIPS} combined"
+            )
+    validate_acyclic_graph(references, edges)
+    return delivery_policy, tasks, edges
+
+
+def validate_acyclic_graph(
+    references: set[str], edges: list[tuple[str, str]]
+) -> None:
+    in_degree = {reference: 0 for reference in references}
+    dependents_by_blocker: dict[str, list[str]] = defaultdict(list)
+    for dependent, blocker in edges:
+        dependents_by_blocker[blocker].append(dependent)
+        in_degree[dependent] += 1
+    ready = deque(sorted(reference for reference, degree in in_degree.items() if degree == 0))
+    visited = 0
+    while ready:
+        blocker = ready.popleft()
+        visited += 1
+        for dependent in sorted(dependents_by_blocker[blocker]):
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                ready.append(dependent)
+    if visited != len(references):
+        cycle_members = sorted(reference for reference, degree in in_degree.items() if degree)
+        raise ClientError(
+            "dependencies contain a cycle involving: " + ", ".join(cycle_members)
+        )
+
+
+def connected_components(
+    references: list[str], edges: list[tuple[str, str]]
+) -> list[list[str]]:
+    neighbors: dict[str, set[str]] = {reference: set() for reference in references}
+    for dependent, blocker in edges:
+        neighbors[dependent].add(blocker)
+        neighbors[blocker].add(dependent)
+    unseen = set(references)
+    components: list[list[str]] = []
+    for reference in references:
+        if reference not in unseen:
+            continue
+        pending = [reference]
+        component: list[str] = []
+        unseen.remove(reference)
+        while pending:
+            current = pending.pop()
+            component.append(current)
+            for neighbor in sorted(neighbors[current], reverse=True):
+                if neighbor in unseen:
+                    unseen.remove(neighbor)
+                    pending.append(neighbor)
+        components.append(component)
+    return components
+
+
+def edge_record(
+    dependent: str, blocker: str, gids: dict[str, str]
+) -> dict[str, str]:
+    return {
+        "edge": f"{dependent} -> {blocker}",
+        "dependent": dependent,
+        "dependent_gid": gids[dependent],
+        "blocker": blocker,
+        "blocker_gid": gids[blocker],
+    }
+
+
+def task_content_hash(task: dict[str, Any]) -> str:
+    content = {
+        "custom_fields": task.get("custom_fields", {}),
+        "name": task["name"],
+        "notes": task.get("notes", ""),
+    }
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def batch_definition_hash(
+    delivery_policy: str,
+    tasks: list[dict[str, Any]],
+    edges: list[tuple[str, str]],
+) -> str:
+    definition = {
+        "delivery_policy": delivery_policy,
+        "edges": [
+            {"blocker": blocker, "dependent": dependent}
+            for dependent, blocker in sorted(edges)
+        ],
+        "tasks": [
+            {
+                "content_sha256": task_content_hash(task),
+                "ref": task["ref"],
+            }
+            for task in sorted(tasks, key=lambda item: item["ref"])
+        ],
+    }
+    canonical = json.dumps(definition, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def task_external_identity(
+    batch_creation_id: str,
+    batch_definition_sha256: str,
+    batch_anchor_ref: str,
+    task: dict[str, Any],
+    project_gid: str,
+    backlog_gid: str,
+) -> tuple[str, str]:
+    identity_suffix = (
+        "batch"
+        if task["ref"] == batch_anchor_ref
+        else f"task:{task['ref']}"
+    )
+    external_gid = f"flashy-factory:{batch_creation_id}:{identity_suffix}"
+    if len(external_gid.encode("utf-8")) > 1024:
+        raise ClientError(f"external GID for task {task['ref']!r} exceeds 1024 bytes")
+    external_data = json.dumps(
+        {
+            "batch_creation_id": batch_creation_id,
+            "batch_definition_sha256": batch_definition_sha256,
+            "content_sha256": task_content_hash(task),
+            "project_gid": project_gid,
+            "section_gid": backlog_gid,
+            "task_ref": task["ref"],
+            "version": 1,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(external_data.encode("utf-8")) > 32768:
+        raise ClientError(f"external data for task {task['ref']!r} exceeds 32768 bytes")
+    return external_gid, external_data
+
+
+def external_task_path(external_gid: str) -> str:
+    return f"/tasks/external:{urllib.parse.quote(external_gid, safe='')}"
+
+
+def get_external_task(
+    client: AsanaClient, external_gid: str
+) -> dict[str, Any] | None:
+    try:
+        payload = client.request(
+            "GET",
+            external_task_path(external_gid),
+            query={
+                "opt_fields": (
+                    "gid,name,notes,completed,external.gid,external.data,"
+                    "memberships.project.gid,memberships.section.gid"
+                )
+            },
+        )
+    except ClientError as error:
+        if error.status_code == 404:
+            return None
+        raise
+    task = payload.get("data")
+    if not isinstance(task, dict):
+        raise ClientError(f"external task {external_gid!r} returned invalid data")
+    require_gid("external task.gid", task.get("gid"))
+    return task
+
+
+def recover_external_task(
+    client: AsanaClient, external_gid: str
+) -> dict[str, Any]:
+    last_error: ClientError | None = None
+    for attempt in range(EXTERNAL_RECOVERY_ATTEMPTS):
+        try:
+            task = get_external_task(client, external_gid)
+            if task is not None:
+                return task
+            last_error = ClientError(
+                f"external creation identity {external_gid!r} was not found"
+            )
+        except ClientError as error:
+            last_error = error
+        if attempt + 1 < EXTERNAL_RECOVERY_ATTEMPTS:
+            time.sleep(EXTERNAL_RECOVERY_INITIAL_DELAY_SECONDS * (2**attempt))
+    assert last_error is not None
+    raise ClientError(
+        f"external creation identity {external_gid!r} remained unresolved after "
+        f"{EXTERNAL_RECOVERY_ATTEMPTS} lookup attempts: {redacted_error(last_error)}"
+    ) from last_error
+
+
+def verify_external_task(
+    task: dict[str, Any],
+    expected_task: dict[str, Any],
+    external_gid: str,
+    external_data: str,
+    project_gid: str,
+    allowed_section_gids: set[str],
+) -> str:
+    gid = require_gid("external task.gid", task.get("gid"))
+    external = task.get("external")
+    if not isinstance(external, dict):
+        raise ClientError(f"Asana task {gid} has no readable external identity")
+    if external.get("gid") != external_gid or external.get("data") != external_data:
+        raise ClientError(
+            f"external creation identity {external_gid!r} is already used by mismatched content"
+        )
+    if task.get("completed") is True:
+        raise ClientError(
+            f"external creation identity {external_gid!r} belongs to a completed task"
+        )
+    if task.get("name") != expected_task["name"] or str(task.get("notes") or "") != expected_task.get(
+        "notes", ""
+    ):
+        raise ClientError(
+            f"external creation identity {external_gid!r} has mismatched live content"
+        )
+    memberships = (
+        task.get("memberships") if isinstance(task.get("memberships"), list) else []
+    )
+    if len(memberships) != 1:
+        raise ClientError(
+            f"external creation identity {external_gid!r} is attached to an unexpected project"
+        )
+    membership = memberships[0]
+    membership_project = (
+        membership.get("project") if isinstance(membership, dict) else None
+    )
+    membership_section = (
+        membership.get("section") if isinstance(membership, dict) else None
+    )
+    section_gid = (
+        str(membership_section.get("gid"))
+        if isinstance(membership_section, dict)
+        and membership_section.get("gid") is not None
+        else None
+    )
+    if (
+        not isinstance(membership_project, dict)
+        or membership_project.get("gid") != project_gid
+        or section_gid not in allowed_section_gids
+    ):
+        raise ClientError(
+            f"external creation identity {external_gid!r} is outside the expected project section"
+        )
+    return gid
+
+
+def mutate_tag(
+    client: AsanaClient, task_gid: str, tag_gid: str, operation: str
+) -> None:
+    client.request(
+        "POST",
+        f"/tasks/{encoded_gid(task_gid)}/{operation}",
+        data={"tag": tag_gid},
+    )
+
+
+def mutate_section(client: AsanaClient, task_gid: str, section_gid: str) -> None:
+    client.request(
+        "POST",
+        f"/sections/{encoded_gid(section_gid)}/addTask",
+        data={"task": task_gid},
+    )
+
+
+def verify_component_authorization(
+    client: AsanaClient,
+    component: list[str],
+    gids: dict[str, str],
+    project_gid: str,
+    expected_section_gid: str,
+    expected_tag_gid: str,
+    authorization_tag_gids: set[str],
+) -> tuple[list[str], list[dict[str, str]]]:
+    unsafe_gids: list[str] = []
+    failures: list[dict[str, str]] = []
+    for reference in component:
+        gid = gids[reference]
+        try:
+            task = task_in_project(
+                client,
+                gid,
+                project_gid,
+                include_authorization=True,
+            )
+            tags = task.get("tags") if isinstance(task.get("tags"), list) else []
+            present_authorization_tags = {
+                str(tag.get("gid"))
+                for tag in tags
+                if isinstance(tag, dict) and tag.get("gid") in authorization_tag_gids
+            }
+            memberships = (
+                task.get("memberships")
+                if isinstance(task.get("memberships"), list)
+                else []
+            )
+            project_sections = {
+                str(membership["section"].get("gid"))
+                for membership in memberships
+                if isinstance(membership, dict)
+                and isinstance(membership.get("project"), dict)
+                and membership["project"].get("gid") == project_gid
+                and isinstance(membership.get("section"), dict)
+                and membership["section"].get("gid") is not None
+            }
+            if present_authorization_tags != {expected_tag_gid} or project_sections != {
+                expected_section_gid
+            }:
+                unsafe_gids.append(gid)
+                failures.append(
+                    {
+                        "operation": f"verify_authorization:{reference}",
+                        "error": (
+                            "expected exactly one selected authorization tag and "
+                            f"section {expected_section_gid}; found tags "
+                            f"{sorted(present_authorization_tags)} and sections "
+                            f"{sorted(project_sections)}"
+                        ),
+                    }
+                )
+        except ClientError as error:
+            unsafe_gids.append(gid)
+            failures.append(
+                {
+                    "operation": f"verify_authorization:{reference}",
+                    "error": redacted_error(error),
+                }
+            )
+    return unsafe_gids, failures
+
+
+def safeguard_component(
+    client: AsanaClient,
+    component: list[str],
+    gids: dict[str, str],
+    project_gid: str,
+    authorization_tags: dict[str, str],
+    backlog_gid: str,
+) -> tuple[list[str], list[dict[str, str]]]:
+    failures: list[dict[str, str]] = []
+    manual_tag_gid = authorization_tags[AUTHORIZATION_TAGS["backlog_only"]]
+    auto_tag_gid = authorization_tags[AUTHORIZATION_TAGS["autonomous_to_pr"]]
+    for reference in reversed(component):
+        gid = gids[reference]
+        for operation, mutation in (
+            ("safeguard_section", lambda: mutate_section(client, gid, backlog_gid)),
+            ("safeguard_auto_tag", lambda: mutate_tag(client, gid, auto_tag_gid, "removeTag")),
+            ("safeguard_manual_tag", lambda: mutate_tag(client, gid, manual_tag_gid, "addTag")),
+        ):
+            try:
+                mutation()
+            except ClientError as safeguard_error:
+                failures.append(
+                    {
+                        "operation": f"{operation}:{reference}",
+                        "error": redacted_error(safeguard_error),
+                    }
+                )
+    unsafe_gids, verification_failures = verify_component_authorization(
+        client,
+        component,
+        gids,
+        project_gid,
+        backlog_gid,
+        manual_tag_gid,
+        set(authorization_tags.values()),
+    )
+    failures.extend(verification_failures)
+    return unsafe_gids, failures
+
+
+def activate_component(
+    client: AsanaClient,
+    component: list[str],
+    gids: dict[str, str],
+    project_gid: str,
+    delivery_policy: str,
+    authorization_tags: dict[str, str],
+    backlog_gid: str,
+    ready_for_spec_gid: str | None,
+) -> tuple[bool, list[str], list[dict[str, str]]]:
+    failures: list[dict[str, str]] = []
+    selected_tag_gid = authorization_tags[AUTHORIZATION_TAGS[delivery_policy]]
+    opposite_policy = (
+        "backlog_only"
+        if delivery_policy == "autonomous_to_pr"
+        else "autonomous_to_pr"
+    )
+    opposite_tag_gid = authorization_tags[AUTHORIZATION_TAGS[opposite_policy]]
+    expected_section_gid = (
+        ready_for_spec_gid
+        if delivery_policy == "autonomous_to_pr"
+        else backlog_gid
+    )
+    assert expected_section_gid is not None
+    try:
+        for reference in component:
+            mutate_tag(client, gids[reference], opposite_tag_gid, "removeTag")
+        for reference in component:
+            mutate_tag(client, gids[reference], selected_tag_gid, "addTag")
+        if delivery_policy == "autonomous_to_pr":
+            assert ready_for_spec_gid is not None
+            for reference in component:
+                mutate_section(client, gids[reference], ready_for_spec_gid)
+        unsafe_gids, verification_failures = verify_component_authorization(
+            client,
+            component,
+            gids,
+            project_gid,
+            expected_section_gid,
+            selected_tag_gid,
+            set(authorization_tags.values()),
+        )
+        failures.extend(verification_failures)
+        if not unsafe_gids:
+            return True, [], failures
+    except ClientError as error:
+        failures.append(
+            {"operation": "authorize_component", "error": redacted_error(error)}
+        )
+
+    unsafe_gids, safeguard_failures = safeguard_component(
+        client,
+        component,
+        gids,
+        project_gid,
+        authorization_tags,
+        backlog_gid,
+    )
+    failures.extend(safeguard_failures)
+    return False, unsafe_gids, failures
+
+
+def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    manifest = read_json(args.input, "batch input")
+    delivery_policy, tasks, edges = parse_batch_manifest(manifest)
+    client.validate_batch_oauth()
+    project_gid = require_gid(
+        "--project or ASANA_PROJECT_GID",
+        args.project or os.environ.get("ASANA_PROJECT_GID"),
+    )
+    workspace_gid = require_gid(
+        "ASANA_WORKSPACE_GID", os.environ.get("ASANA_WORKSPACE_GID")
+    )
+
+    backlog_gid = configured_batch_section(
+        client,
+        project_gid,
+        section_environment="ASANA_BACKLOG_SECTION_GID",
+        witness_environment="ASANA_BACKLOG_SECTION_WITNESS_TASK_GID",
+        label=BACKLOG_SECTION,
+    )
+    ready_for_spec_gid: str | None = None
+    if delivery_policy == "autonomous_to_pr":
+        ready_for_spec_gid = configured_batch_section(
+            client,
+            project_gid,
+            section_environment="ASANA_READY_FOR_SPEC_SECTION_GID",
+            witness_environment="ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID",
+            label=READY_FOR_SPEC_SECTION,
+        )
+    authorization_tags = resolve_authorization_tags(client, workspace_gid)
+
+    batch_creation_id = manifest["batch_creation_id"]
+    batch_definition_sha256 = batch_definition_hash(delivery_policy, tasks, edges)
+    batch_anchor_ref = min(task["ref"] for task in tasks)
+    external_identities: dict[str, tuple[str, str]] = {}
+    gids: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    allowed_existing_sections = {backlog_gid}
+    if ready_for_spec_gid is not None:
+        allowed_existing_sections.add(ready_for_spec_gid)
+    for task in tasks:
+        external_gid, external_data = task_external_identity(
+            batch_creation_id,
+            batch_definition_sha256,
+            batch_anchor_ref,
+            task,
+            project_gid,
+            backlog_gid,
+        )
+        external_identities[task["ref"]] = (external_gid, external_data)
+        existing = get_external_task(client, external_gid)
+        if existing is not None:
+            gids[task["ref"]] = verify_external_task(
+                existing,
+                task,
+                external_gid,
+                external_data,
+                project_gid,
+                allowed_existing_sections,
+            )
+            sources[task["ref"]] = "reused"
+
+    failed_tasks: list[dict[str, str]] = []
+    creation_recoveries: list[dict[str, str]] = []
+    unreconciled_external_identities: list[dict[str, str]] = []
+    anchor_task = next(task for task in tasks if task["ref"] == batch_anchor_ref)
+    creation_order = [anchor_task, *[task for task in tasks if task is not anchor_task]]
+    for task in creation_order:
+        if task["ref"] in gids:
+            continue
+        external_gid, external_data = external_identities[task["ref"]]
+        data: dict[str, Any] = {
+            "name": task["name"],
+            "projects": [project_gid],
+            "external": {"gid": external_gid, "data": external_data},
+        }
+        if "notes" in task:
+            data["notes"] = task["notes"]
+        try:
+            payload = client.request("POST", "/tasks", data=data)
+            created_task = payload.get("data")
+            if not isinstance(created_task, dict):
+                raise ClientError("Asana task creation returned invalid data")
+            gid = require_gid("created task.gid", created_task.get("gid"))
+            mutate_section(client, gid, backlog_gid)
+            if gid in gids.values():
+                raise ClientError(f"Asana returned duplicate created task GID {gid}")
+            source = "created"
+        except ClientError as create_error:
+            try:
+                recovered = recover_external_task(client, external_gid)
+                gid = verify_external_task(
+                    recovered,
+                    task,
+                    external_gid,
+                    external_data,
+                    project_gid,
+                    {backlog_gid},
+                )
+                source = "recovered"
+                creation_recoveries.append(
+                    {
+                        "ref": task["ref"],
+                        "gid": gid,
+                        "create_error": redacted_error(create_error),
+                    }
+                )
+            except ClientError as recovery_error:
+                unreconciled_external_identities.append(
+                    {
+                        "ref": task["ref"],
+                        "external_gid": external_gid,
+                        "error": redacted_error(recovery_error),
+                    }
+                )
+                failed_tasks.append(
+                    {
+                        "ref": task["ref"],
+                        "error": (
+                            f"{redacted_error(create_error)}; recovery failed: "
+                            f"{redacted_error(recovery_error)}"
+                        ),
+                    }
+                )
+                if task["ref"] == batch_anchor_ref:
+                    break
+                continue
+        if gid in gids.values():
+            failed_tasks.append(
+                {
+                    "ref": task["ref"],
+                    "error": f"Asana returned duplicate created task GID {gid}",
+                }
+            )
+            continue
+        gids[task["ref"]] = gid
+        sources[task["ref"]] = source
+
+    created = [
+        {
+            "ref": task["ref"],
+            "gid": gids[task["ref"]],
+            "source": sources[task["ref"]],
+        }
+        for task in tasks
+        if task["ref"] in gids
+    ]
+
+    requested_edges = [f"{dependent} -> {blocker}" for dependent, blocker in edges]
+    report: dict[str, Any] = {
+        "ok": False,
+        "delivery_policy": delivery_policy,
+        "batch_creation_id": batch_creation_id,
+        "batch_definition_sha256": batch_definition_sha256,
+        "created_tasks": created,
+        "creation_recoveries": creation_recoveries,
+        "unreconciled_external_identities": unreconciled_external_identities,
+        "failed_tasks": failed_tasks,
+        "requested_edges": requested_edges,
+        "verified_edges": [],
+        "missing_edges": [],
+        "components": [],
+        "failures": [],
+    }
+    if failed_tasks:
+        report["missing_edges"] = requested_edges
+        report["failures"].append(
+            {
+                "operation": "create_tasks",
+                "error": "batch creation was partial; no dependencies or autonomous authorization were attempted",
+            }
+        )
+        created_references = [task["ref"] for task in tasks if task["ref"] in gids]
+        if created_references:
+            unsafe_gids, safeguard_failures = safeguard_component(
+                client,
+                created_references,
+                gids,
+                project_gid,
+                authorization_tags,
+                backlog_gid,
+            )
+            report["failures"].extend(safeguard_failures)
+            report["components"].append(
+                {
+                    "tasks": created_references,
+                    "missing_edges": requested_edges,
+                    "unsafe_task_gids": unsafe_gids,
+                    "status": (
+                        "authorization_state_unsafe"
+                        if unsafe_gids
+                        else "manual_backlog_partial_create"
+                    ),
+                }
+            )
+        return report
+
+    write_failures: list[dict[str, str]] = []
+    for dependent, blocker in edges:
+        try:
+            client.request(
+                "POST",
+                f"/tasks/{encoded_gid(gids[dependent])}/addDependencies",
+                data={"dependencies": [gids[blocker]]},
+            )
+        except ClientError as error:
+            write_failures.append(
+                {
+                    "operation": f"add_dependency:{dependent} -> {blocker}",
+                    "error": redacted_error(error),
+                }
+            )
+
+    blockers_by_dependent: dict[str, set[str]] = defaultdict(set)
+    verification_failures: list[dict[str, str]] = []
+    for dependent in dict.fromkeys(dependent for dependent, _ in edges):
+        try:
+            task = task_in_project(
+                client,
+                gids[dependent],
+                project_gid,
+                include_dependencies=True,
+            )
+            dependencies = (
+                task.get("dependencies")
+                if isinstance(task.get("dependencies"), list)
+                else []
+            )
+            blockers_by_dependent[dependent] = {
+                require_gid("dependency.gid", dependency.get("gid"))
+                for dependency in dependencies
+                if isinstance(dependency, dict)
+            }
+        except ClientError as error:
+            verification_failures.append(
+                {
+                    "operation": f"verify_dependencies:{dependent}",
+                    "error": redacted_error(error),
+                }
+            )
+
+    missing_edge_pairs: set[tuple[str, str]] = set()
+    for dependent, blocker in edges:
+        record = edge_record(dependent, blocker, gids)
+        if gids[blocker] in blockers_by_dependent.get(dependent, set()):
+            report["verified_edges"].append(record)
+        else:
+            missing_edge_pairs.add((dependent, blocker))
+            report["missing_edges"].append(record)
+    report["failures"].extend(write_failures)
+    report["failures"].extend(verification_failures)
+
+    references = [task["ref"] for task in tasks]
+    for component in connected_components(references, edges):
+        component_edges = [
+            (dependent, blocker)
+            for dependent, blocker in edges
+            if dependent in component or blocker in component
+        ]
+        missing = [
+            f"{dependent} -> {blocker}"
+            for dependent, blocker in component_edges
+            if (dependent, blocker) in missing_edge_pairs
+        ]
+        component_report: dict[str, Any] = {
+            "tasks": component,
+            "missing_edges": missing,
+            "unsafe_task_gids": [],
+            "status": "pending_safeguard" if missing else "pending_authorization",
+        }
+        if missing:
+            unsafe_gids, safeguard_failures = safeguard_component(
+                client,
+                component,
+                gids,
+                project_gid,
+                authorization_tags,
+                backlog_gid,
+            )
+            report["failures"].extend(safeguard_failures)
+            component_report["unsafe_task_gids"] = unsafe_gids
+            component_report["status"] = (
+                "authorization_state_unsafe"
+                if unsafe_gids
+                else "manual_backlog_unverified"
+            )
+        else:
+            activated, unsafe_gids, failures = activate_component(
+                client,
+                component,
+                gids,
+                project_gid,
+                delivery_policy,
+                authorization_tags,
+                backlog_gid,
+                ready_for_spec_gid,
+            )
+            report["failures"].extend(failures)
+            component_report["unsafe_task_gids"] = unsafe_gids
+            if activated:
+                component_report["status"] = (
+                    "ready_for_spec"
+                    if delivery_policy == "autonomous_to_pr"
+                    else "manual_backlog"
+                )
+            elif unsafe_gids:
+                component_report["status"] = "authorization_state_unsafe"
+            else:
+                component_report["status"] = "backlog_authorization_failed"
+        report["components"].append(component_report)
+
+    report["ok"] = (
+        not report["failed_tasks"]
+        and not report["missing_edges"]
+        and all(
+            component["status"] in {"ready_for_spec", "manual_backlog"}
+            for component in report["components"]
+        )
+    )
+    return report
 
 
 def update_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -458,6 +1567,17 @@ def parser() -> argparse.ArgumentParser:
     creating.add_argument("--notes-file")
     creating.add_argument("--section")
 
+    batch_creating = subcommands.add_parser(
+        "batch-create",
+        help="create, verify, and authorize a dependency batch from JSON",
+    )
+    batch_creating.add_argument("--project")
+    batch_creating.add_argument(
+        "--input",
+        required=True,
+        help="JSON manifest path, or - to read standard input",
+    )
+
     updating = subcommands.add_parser("update", help="update selected task fields")
     updating.add_argument("task_gid")
     updating.add_argument("--name")
@@ -482,13 +1602,15 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
-        client = AsanaClient()
+        client = AsanaClient(oauth_required=args.command == "batch-create")
         if args.command == "list":
             result = list_source(client, args)
         elif args.command == "get":
             result = get_task(client, args)
         elif args.command == "create":
             result = create_task(client, args)
+        elif args.command == "batch-create":
+            result = create_batch(client, args)
         elif args.command == "update":
             result = update_task(client, args)
         elif args.command == "comment":
@@ -501,12 +1623,11 @@ def main() -> int:
             result = change_tag(client, args, "removeTag")
         json.dump(result, sys.stdout, separators=(",", ":"))
         sys.stdout.write("\n")
+        if args.command == "batch-create" and result.get("ok") is not True:
+            return 1
         return 0
     except ClientError as error:
-        message = str(error)
-        token = os.environ.get("ASANA_ACCESS_TOKEN", "")
-        if token:
-            message = message.replace(token, "[REDACTED]")
+        message = redacted_error(error)
         if error.rate_limited:
             body: dict[str, Any] = {
                 "kind": "rate_limited",

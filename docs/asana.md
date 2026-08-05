@@ -42,7 +42,9 @@ export ASANA_WORKSPACE_GID="..."
 ## Authenticate without committing a secret
 
 For a personal setup, create a dedicated, revocable Asana personal access token
-and expose it only to the Flashy Factory process:
+and expose it only to the Flashy Factory process. The personal token supports
+polling and the single-task client commands; verified batch creation has a
+separate OAuth requirement described below.
 
 ```sh
 export ASANA_ACCESS_TOKEN="..."
@@ -124,6 +126,120 @@ token. `create` and `list` use `ASANA_PROJECT_GID` unless `--project` is
 provided. Tag operations resolve existing tags in `ASANA_WORKSPACE_GID`.
 Missing or duplicate section/tag names are hard failures; the client does not
 guess.
+
+## Create a verified batch
+
+The repository includes an `asana-backlog` skill contract at
+`.codex/skills/asana-backlog/SKILL.md`. Personal Codex installations do not
+automatically update from a repository checkout: after merging a change to the
+contract, deliberately sync that file to the installed `asana-backlog` skill
+before using the new workflow.
+
+The skill sends one validated JSON manifest to the client. This example creates
+an autonomous API task that is blocked by a schema task:
+
+```json
+{
+  "batch_creation_id": "2026-08-04-api-schema-v1",
+  "delivery_policy": "autonomous_to_pr",
+  "dependencies": {
+    "mode": "explicit_edges",
+    "edges": [{"dependent": "api", "blocker": "schema"}]
+  },
+  "tasks": [
+    {"ref": "schema", "name": "Add the schema"},
+    {"ref": "api", "name": "Use the schema"}
+  ]
+}
+```
+
+Pass the manifest by file or standard input:
+
+```sh
+.flashy-factory/clients/asana batch-create --input /tmp/asana-batch.json
+```
+
+`batch-create` fails closed unless it can verify an OAuth access token issued
+to the configured Asana app. An external token manager must mint or refresh the
+short-lived token before each run; the client deliberately does not accept or
+store an OAuth client secret or refresh token. Configure it through the process
+environment:
+
+```sh
+export ASANA_AUTH_MODE="oauth"
+export ASANA_OAUTH_CLIENT_ID="..."
+export ASANA_OAUTH_ACCESS_TOKEN="..."
+export ASANA_BACKLOG_SECTION_GID="..."
+export ASANA_BACKLOG_SECTION_WITNESS_TASK_GID="..."
+export ASANA_READY_FOR_SPEC_SECTION_GID="..."
+export ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID="..."
+```
+
+The token must be active, belong to `ASANA_OAUTH_CLIENT_ID`, have at least five
+minutes remaining, and include only `tasks:read`, `tasks:write`,
+`projects:read`, and `tags:read`; never enable Asana Full Permissions. During
+`batch-create`, configured section GIDs are not trusted alone. The client reads
+each configured witness task and requires exactly one membership pairing the
+configured project and section. `backlog_only` validates the Backlog pair;
+`autonomous_to_pr` validates both pairs. A missing, inaccessible, wrong-project,
+or wrong-section witness stops before any task creation. The client does not
+call the project-section discovery endpoint in this command. Keep
+the access token in an OS secret manager or service environment. Never put an
+access token, refresh token, or client secret in the manifest, command line,
+repository, task notes, logs, or shell history.
+
+`batch_creation_id` is required and caller supplied. Choose a stable,
+non-secret identifier that is unique across projects for this Asana app, and
+reuse it unchanged when retrying the same logical batch. Changing task names,
+notes, custom fields, project, task references, delivery policy, or the
+canonical dependency graph while reusing an identifier is rejected.
+
+`delivery_policy` is exactly `backlog_only` or `autonomous_to_pr`.
+`dependencies` is `independent`, `listed_chain`, or an `explicit_edges` object;
+an explicit edge is always `dependent -> blocker`. A listed chain makes each
+task after the first depend on the task immediately before it.
+
+The operation accepts at most 25 tasks. It rejects unknown task references,
+self-dependencies, duplicate edges, cycles, and graphs over Asana's limit of 30
+combined dependencies and dependents per task before creating anything.
+It also rejects `custom_fields` in a batch manifest: verifying those values on
+a retry would require `custom_fields:read`, which is outside this app's fixed
+narrow OAuth scope set.
+
+All tasks are created in `Backlog` before any edge is written. The client then
+adds native dependencies, reads every dependent task back, and authorizes only
+fully verified connected components. Manual components receive the existing
+`factory:manual` tag and stay in `Backlog`. Autonomous components receive the
+existing `factory:auto-to-pr` tag and move to `Ready For Spec`. The client
+never creates a missing authorization tag. It resolves both exact tags, removes
+the opposite tag, and reads each task back to verify exactly the selected tag
+and expected section before reporting success.
+
+Before creating anything, the client derives one deterministic Asana
+`external.gid` for each task. The lexicographically first task reserves a fixed
+batch-level identity keyed only by `batch_creation_id`; the remaining identities
+are namespaced by task `ref`. The client then looks up every identity. This
+canonical anchor prevents the same creation ID from being reused with a
+disjoint or removed task set. An exact existing task in the expected project
+and section is reused only when it has exactly one total project membership;
+mismatched content, another project, or any additional project membership stops
+the batch before task creation. If Asana accepts a create but the response is
+lost or unusable, the
+client performs bounded, backoff-aware lookups by that external identity and
+continues only after verifying the exact batch definition, content, and Backlog
+membership. It never retries the ambiguous create request, preventing a
+duplicate on rerun. If reconciliation is exhausted, the nonzero JSON report
+names the exact unreconciled external identity so an operator can inspect it.
+
+A partial task-creation failure stops before dependency or autonomous
+authorization writes and safely classifies every created task as manual in
+`Backlog`. A partial dependency failure does the same for the affected
+component; unrelated verified components may proceed. The command exits
+nonzero and prints a JSON report containing created GIDs, failed tasks,
+verified edges, exact missing edges, component states, and operation failures.
+If authorization fails, the client attempts a verified downgrade to the manual
+tag in `Backlog`; the report names exact unsafe task GIDs when that state cannot
+be confirmed. It never deletes a successfully created task.
 
 ## Validate and start
 
