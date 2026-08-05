@@ -476,6 +476,51 @@ fn a_new_approval_revision_enqueues_without_an_observed_label_gap() {
 }
 
 #[test]
+fn unchanged_waiting_dependency_observation_does_not_reenqueue_but_a_new_revision_does() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let observe = |revision: &str| ObservedTicket {
+        source_item: "asana-waiting-task".into(),
+        revision: revision.into(),
+        eligible: true,
+        payload: format!("waiting-{revision}"),
+    };
+    let first = ledger
+        .reconcile_ticket_poll(
+            "owainlewis/factory",
+            "reconcile-dependencies",
+            &[observe("asana:waiting:sha256:blocked")],
+        )
+        .unwrap();
+    assert_eq!(first.iter().filter(|task| task.created).count(), 1);
+    assert!(
+        ledger
+            .reconcile_ticket_poll(
+                "owainlewis/factory",
+                "reconcile-dependencies",
+                &[observe("asana:waiting:sha256:blocked")],
+            )
+            .unwrap()
+            .is_empty()
+    );
+
+    let task = ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+
+    let released = ledger
+        .reconcile_ticket_poll(
+            "owainlewis/factory",
+            "reconcile-dependencies",
+            &[observe("asana:waiting:sha256:released")],
+        )
+        .unwrap();
+    assert_eq!(released.iter().filter(|task| task.created).count(), 1);
+}
+
+#[test]
 fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");

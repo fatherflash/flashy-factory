@@ -16,6 +16,8 @@ use crate::repository::{RepositoryProvider, RepositoryRef};
 
 const TRIAGE_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/triage.md");
 const IMPLEMENT_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/implement.md");
+const RECONCILE_DEPENDENCIES_WORKFLOW: &str =
+    include_str!("../.flashy-factory/workflows/reconcile-dependencies.md");
 const BUG_FINDER_WORKFLOW: &str = include_str!("../.flashy-factory/workflows/bug-finder.md");
 const ASANA_CLIENT: &str = include_str!("../.flashy-factory/clients/asana");
 const ASANA_SOURCE: &str = include_str!("../.flashy-factory/sources/asana");
@@ -440,6 +442,11 @@ fn plan_default_assets(config_directory: &Path) -> Result<Vec<FilePlan>> {
             "implementation workflow",
         )?,
         plan_file(
+            config_directory.join("workflows/reconcile-dependencies.md"),
+            adapt(RECONCILE_DEPENDENCIES_WORKFLOW),
+            "dependency reconciliation workflow",
+        )?,
+        plan_file(
             config_directory.join("workflows/bug-finder.md"),
             adapt(BUG_FINDER_WORKFLOW),
             "bug finder workflow",
@@ -642,6 +649,15 @@ fn default_config(
     document["trigger"]["implement"]["workflow"] =
         value(format!("{config_directory}/workflows/implement.md"));
     document["trigger"]["implement"]["timeout"] = value("4h");
+    document["trigger"]["reconcile-dependencies"] = Item::Table(Table::new());
+    document["trigger"]["reconcile-dependencies"]["type"] = value("source");
+    document["trigger"]["reconcile-dependencies"]["state"] =
+        value("Approved - Waiting On Dependencies");
+    document["trigger"]["reconcile-dependencies"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:auto-to-pr"]));
+    document["trigger"]["reconcile-dependencies"]["workflow"] = value(format!(
+        "{config_directory}/workflows/reconcile-dependencies.md"
+    ));
     document["trigger"]["implement-manual"] = Item::Table(Table::new());
     document["trigger"]["implement-manual"]["type"] = value("source");
     document["trigger"]["implement-manual"]["state"] = value("Ready To Implement");

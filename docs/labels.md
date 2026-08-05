@@ -19,10 +19,11 @@ Approved - Waiting On Dependencies
 Needs Decision
 ```
 
-`Ready For Spec` and `Ready To Implement` are the only polled sections in the
-checked-in configuration. Moving a task into one of them is an explicit request
-for an agent pass. Only trusted project members should have permission to make
-those moves.
+`Ready For Spec` and `Ready To Implement` are the normal polled sections.
+Moving a task into either is an explicit request for an agent pass. The
+checked-in configuration also polls `Approved - Waiting On Dependencies`, but
+only for `factory:auto-to-pr` dependency reconciliation. Only trusted project
+members should be able to move tasks into the two normal work sections.
 
 The triage workflow moves a claimed task to `Creating Spec`. For
 `factory:manual`, a complete specification goes to `Awaiting Approval`, and a
@@ -34,6 +35,13 @@ custom field—remain the visual source of truth. The implementation workflow
 claims eligible work by moving it to `Implementing`, then moves a green
 pull-request handoff to `Reviewing`. Humans remain responsible for merge and
 `Done`.
+
+While an autonomous task is waiting, its dedicated reconciliation trigger
+re-reads the graph on every poll. Only a changed dependency graph or completion
+revision creates another reconciliation run. A final completed blocker releases
+the task to `Ready To Implement`; any remaining incomplete blocker leaves it
+waiting. Manual tasks are never polled or revalidated by this reconciliation
+trigger.
 
 ## Type tags
 

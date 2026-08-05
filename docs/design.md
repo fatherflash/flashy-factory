@@ -116,6 +116,7 @@ Each managed repository owns:
 └── workflows/
     ├── bug-finder.md
     ├── implement.md
+    ├── reconcile-dependencies.md
     └── triage.md
 ```
 
@@ -145,6 +146,12 @@ type = "source"
 state = "Ready To Implement"
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
+
+[trigger.reconcile-dependencies]
+type = "source"
+state = "Approved - Waiting On Dependencies"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/reconcile-dependencies.md"
 
 [trigger.bug-finder]
 type = "schedule"

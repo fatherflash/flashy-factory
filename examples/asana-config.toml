@@ -30,6 +30,12 @@ labels = ["factory:auto-to-pr"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 
+[trigger.reconcile-dependencies]
+type = "source"
+state = "Approved - Waiting On Dependencies"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/reconcile-dependencies.md"
+
 [trigger.implement-manual]
 type = "source"
 state = "Ready To Implement"
