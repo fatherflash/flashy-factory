@@ -548,13 +548,19 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
     return {"issues": issues}
 
 
-def dependency_state(client: AsanaClient, gid: str, project_gid: str) -> dict[str, Any]:
+def dependency_state(
+    client: AsanaClient,
+    gid: str,
+    project_gid: str,
+    assumed_completed: set[str] | None = None,
+) -> dict[str, Any]:
     """Read a task's native dependency graph and reject unsafe observations.
 
     The direct edge list controls implementation eligibility.  We also walk the
     reachable graph so a cycle cannot be hidden behind an otherwise completed
     direct blocker.  Every observed task must belong to this project only.
     """
+    assumed_completed = assumed_completed or set()
     visiting: set[str] = set()
     visited: set[str] = set()
     direct: list[str] = []
@@ -616,7 +622,14 @@ def dependency_state(client: AsanaClient, gid: str, project_gid: str) -> dict[st
     return {
         "dependencies": [blocker for blocker, _ in observed],
         "dependency_revision": "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
-        "blocked": any(not completed for _, completed in observed),
+        # A direct prerequisite that is itself waiting on unfinished work does
+        # not make this task safe to release.  The complete validated graph
+        # must be unblocked, not just its first edge.
+        "blocked": any(
+            not completed
+            for node, completed in completion.items()
+            if node != gid and node not in assumed_completed
+        ),
     }
 
 
@@ -1635,6 +1648,128 @@ def move_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def move_task_to(client: AsanaClient, gid: str, project_gid: str, section_name: str) -> None:
+    section = resolve_section(client, project_gid, section_name)
+    move_task_to_resolved_section(client, gid, section)
+
+
+def move_task_to_resolved_section(client: AsanaClient, gid: str, section: dict[str, Any]) -> None:
+    client.request(
+        "POST",
+        f"/sections/{encoded_gid(require_gid('section.gid', section.get('gid')))}/addTask",
+        data={"task": gid},
+    )
+
+
+def authorization(task: dict[str, Any]) -> str:
+    tags = task.get("tags") if isinstance(task.get("tags"), list) else []
+    names = {tag.get("name") for tag in tags if isinstance(tag, dict)}
+    manual = AUTHORIZATION_TAGS["backlog_only"] in names
+    autonomous = AUTHORIZATION_TAGS["autonomous_to_pr"] in names
+    if manual and not autonomous:
+        return "manual"
+    if not autonomous or len(names & set(AUTHORIZATION_TAGS.values())) != 1:
+        return "unsafe"
+    return "autonomous"
+
+
+def reconciliation_task(client: AsanaClient, gid: str, project_gid: str) -> dict[str, Any]:
+    """A terminal transition must not trust a task shared into another project."""
+    task = task_in_project(client, gid, project_gid, include_context=True)
+    memberships = task.get("memberships")
+    if not isinstance(memberships, list) or len(memberships) != 1:
+        raise ClientError(f"task {gid} must belong only to ASANA_PROJECT_GID {project_gid}")
+    membership = memberships[0]
+    if (
+        not isinstance(membership, dict)
+        or not isinstance(membership.get("project"), dict)
+        or membership["project"].get("gid") != project_gid
+    ):
+        raise ClientError(f"task {gid} does not belong only to ASANA_PROJECT_GID {project_gid}")
+    if task.get("completed") not in {True, False}:
+        raise ClientError(f"task {gid} returned malformed completion state")
+    return task
+
+
+def task_sections(task: dict[str, Any]) -> set[str | None]:
+    memberships = task.get("memberships")
+    return {
+        membership.get("section", {}).get("name")
+        for membership in memberships if isinstance(membership, dict)
+    } if isinstance(memberships, list) else set()
+
+
+def reconcile_pull_request(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    """Apply one trusted terminal PR observation. The daemon supplies only a
+    ledger association; this command rereads Asana before every mutation."""
+    gid = require_gid("task_gid", args.task_gid)
+    project_gid = configured_project_gid()
+    task = reconciliation_task(client, gid, project_gid)
+    lane = authorization(task)
+    sections = task_sections(task)
+    if lane == "manual":
+        return {"status": "manual_untouched", "released": []}
+    if task["completed"] and args.outcome != "merged":
+        return {"status": "completed_untouched", "released": []}
+    if lane != "autonomous":
+        if sections != {"Needs Decision"}:
+            move_task_to_resolved_section(
+                client, gid, resolve_section(client, project_gid, "Needs Decision")
+            )
+        return {"status": "unsafe", "released": []}
+    if args.outcome in {"closed", "unsafe"}:
+        if sections != {"Needs Decision"}:
+            move_task_to_resolved_section(
+                client, gid, resolve_section(client, project_gid, "Needs Decision")
+            )
+        return {"status": "closed_unmerged" if args.outcome == "closed" else "unsafe", "released": []}
+
+    # Read and validate the entire direct dependent set before changing the
+    # parent. A partial dependency observation must not leave a completed task
+    # behind that can incorrectly release work on a later retry.
+    dependents = client.paginate(
+        f"/tasks/{encoded_gid(gid)}/dependents",
+        query={"opt_fields": "gid"}, maximum=1000,
+    )
+    routes: list[tuple[str, str]] = []
+    dependent_gids: set[str] = set()
+    for dependent in dependents:
+        dependent_gid = require_gid("dependent.gid", dependent.get("gid"))
+        if dependent_gid in dependent_gids:
+            raise ClientError(f"task {gid} returned duplicate dependent {dependent_gid}")
+        dependent_gids.add(dependent_gid)
+        live = reconciliation_task(client, dependent_gid, project_gid)
+        lane = authorization(live)
+        dependent_sections = task_sections(live)
+        if lane == "manual" or live["completed"] or dependent_sections != {"Approved - Waiting On Dependencies"}:
+            continue
+        if lane != "autonomous":
+            routes.append((dependent_gid, "Needs Decision"))
+            continue
+        state = dependency_state(
+            client, dependent_gid, project_gid, assumed_completed={gid}
+        )
+        if not state["blocked"]:
+            routes.append((dependent_gid, "Ready To Implement"))
+
+    destination_names = {section for _, section in routes}
+    if sections != {"Done"}:
+        destination_names.add("Done")
+    destinations = {
+        name: resolve_section(client, project_gid, name) for name in destination_names
+    }
+    if sections != {"Done"}:
+        move_task_to_resolved_section(client, gid, destinations["Done"])
+    if not task["completed"]:
+        client.request("PUT", f"/tasks/{encoded_gid(gid)}", data={"completed": True})
+    released: list[str] = []
+    for dependent_gid, section in routes:
+        move_task_to_resolved_section(client, dependent_gid, destinations[section])
+        if section == "Ready To Implement":
+            released.append(dependent_gid)
+    return {"status": "merged", "released": released}
+
+
 def change_tag(
     client: AsanaClient, args: argparse.Namespace, operation: str
 ) -> dict[str, Any]:
@@ -1672,6 +1807,10 @@ def parser() -> argparse.ArgumentParser:
         "dependency-state", help="read and validate native dependency eligibility"
     )
     dependency.add_argument("task_gid")
+
+    reconciliation = subcommands.add_parser("reconcile-pr", help="apply one terminal trusted PR observation")
+    reconciliation.add_argument("task_gid")
+    reconciliation.add_argument("--outcome", required=True, choices=["merged", "closed", "unsafe"])
 
     creating = subcommands.add_parser("create", help="create a project task")
     creating.add_argument("--project")
@@ -1722,6 +1861,8 @@ def main() -> int:
         elif args.command == "dependency-state":
             gid = require_gid("task_gid", args.task_gid)
             result = dependency_state(client, gid, configured_project_gid())
+        elif args.command == "reconcile-pr":
+            result = reconcile_pull_request(client, args)
         elif args.command == "create":
             result = create_task(client, args)
         elif args.command == "batch-create":

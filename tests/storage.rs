@@ -10,7 +10,8 @@ use std::process::Command;
 
 use factory::storage::{
     ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, RunContainer, RunOutcome, RunSandbox, TaskIdentity, TaskState, TaskWorkspace,
+    ObservedTicket, PullRequestEventState, PullRequestObservation, RunContainer, RunOutcome,
+    RunSandbox, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -168,7 +169,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -1242,7 +1243,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
 }
 
 #[test]
@@ -1260,6 +1261,9 @@ fn opens_an_existing_version_eight_ledger() {
              DROP TABLE run_containers;
              ALTER TABLE task_workspaces DROP COLUMN backend;
              DROP TABLE project_claims;
+             DROP TABLE autonomous_pull_request_events;
+             DROP TABLE autonomous_pull_requests;
+             DELETE FROM schema_migrations WHERE version = 13;
              DELETE FROM schema_migrations WHERE version = 12;
              DELETE FROM schema_migrations WHERE version = 11;
              DELETE FROM schema_migrations WHERE version = 10;
@@ -1278,7 +1282,7 @@ fn opens_an_existing_version_eight_ledger() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
 }
 
 #[test]
@@ -1864,4 +1868,166 @@ fn failed_writes_do_not_damage_prior_state() {
         TaskState::Queued
     );
     assert!(ledger.runs_for_task(task.id).unwrap().is_empty());
+}
+
+#[test]
+fn pull_request_event_consumption_is_durable_and_idempotent() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut ledger = Ledger::open(&path).unwrap();
+    ledger
+        .record_pull_request_association(
+            "acme/repository",
+            "asana-42",
+            "https://github.com/acme/repository/pull/42",
+        )
+        .unwrap();
+    assert!(
+        ledger
+            .record_pull_request_association(
+                "acme/repository",
+                "asana-42",
+                "https://github.com/acme/repository/pull/43",
+            )
+            .is_err()
+    );
+    let event_a = PullRequestObservation {
+        state: "open".to_owned(),
+        head_sha: "a".repeat(40),
+        review_fingerprint: "no-reviews".to_owned(),
+    }
+    .fingerprint();
+    let event_b = PullRequestObservation {
+        state: "merged".to_owned(),
+        head_sha: "a".repeat(40),
+        review_fingerprint: "no-reviews".to_owned(),
+    }
+    .fingerprint();
+    assert!(
+        ledger
+            .observe_pull_request_event("acme/repository", "asana-42", &event_a)
+            .unwrap()
+    );
+    assert_eq!(
+        ledger
+            .claim_pull_request_event("acme/repository", "asana-42", &event_a)
+            .unwrap(),
+        Some(PullRequestEventState::Observed)
+    );
+    assert_eq!(
+        ledger
+            .pull_request_event_state("acme/repository", "asana-42", &event_a)
+            .unwrap(),
+        Some(PullRequestEventState::Claimed)
+    );
+    ledger
+        .mark_pull_request_event_asana_applied("acme/repository", "asana-42", &event_a)
+        .unwrap();
+    ledger
+        .consume_pull_request_event("acme/repository", "asana-42", &event_a)
+        .unwrap();
+    drop(ledger);
+
+    let mut restarted = Ledger::open(&path).unwrap();
+    assert_eq!(
+        restarted
+            .pull_request_associations("acme/repository")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        restarted
+            .claim_pull_request_event("acme/repository", "asana-42", &event_a)
+            .unwrap(),
+        Some(PullRequestEventState::Consumed)
+    );
+    assert!(
+        restarted
+            .observe_pull_request_event("acme/repository", "asana-42", &event_b)
+            .unwrap()
+    );
+    assert_eq!(
+        restarted
+            .claim_pull_request_event("acme/repository", "asana-42", &event_b)
+            .unwrap(),
+        Some(PullRequestEventState::Observed)
+    );
+}
+
+#[test]
+fn pull_request_event_claim_is_exclusive_across_ledger_connections() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("ledger.db");
+    let mut first = Ledger::open(&path).unwrap();
+    let mut second = Ledger::open(&path).unwrap();
+    let reconciliation = first
+        .try_acquire_pull_request_reconciliation_lock()
+        .unwrap()
+        .unwrap();
+    assert!(
+        second
+            .try_acquire_pull_request_reconciliation_lock()
+            .unwrap()
+            .is_none()
+    );
+    drop(reconciliation);
+    let fingerprint = PullRequestObservation {
+        state: "merged".to_owned(),
+        head_sha: "a".repeat(40),
+        review_fingerprint: "no-reviews".to_owned(),
+    }
+    .fingerprint();
+    first
+        .observe_pull_request_event("acme/repository", "asana-42", &fingerprint)
+        .unwrap();
+    assert_eq!(
+        first
+            .claim_pull_request_event("acme/repository", "asana-42", &fingerprint)
+            .unwrap(),
+        Some(PullRequestEventState::Observed)
+    );
+    assert_eq!(
+        second
+            .claim_pull_request_event("acme/repository", "asana-42", &fingerprint)
+            .unwrap(),
+        None
+    );
+    drop(first);
+    assert_eq!(
+        second
+            .recover_expired_pull_request_event_claims(i64::MAX)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        second
+            .claim_pull_request_event("acme/repository", "asana-42", &fingerprint)
+            .unwrap(),
+        Some(PullRequestEventState::Observed)
+    );
+}
+
+#[test]
+fn pull_request_associations_reject_untrusted_urls() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    for url in [
+        "not a URL",
+        "https://github.com/acme/other/pull/42",
+        "https://github.com/acme/repository/issues/42",
+        "https://github.com/acme/repository/pull/42?untrusted=true",
+    ] {
+        assert!(
+            ledger
+                .record_pull_request_association("acme/repository", "asana-42", url)
+                .is_err(),
+            "{url}"
+        );
+    }
+    assert!(
+        ledger
+            .consume_pull_request_event("acme/repository", "asana-42", "not-a-fingerprint")
+            .is_err()
+    );
 }

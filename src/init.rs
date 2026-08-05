@@ -598,6 +598,7 @@ fn default_config(
     let mut document = DocumentMut::new();
     document["version"] = value(1);
     document["poll_every"] = value("30s");
+    document["pull_request_reconcile_every"] = value("60s");
     document["repository"] = Item::Table(Table::new());
     document["repository"]["provider"] = value(repository.provider.to_string());
     document["repository"]["identity"] = value(repository.identity());

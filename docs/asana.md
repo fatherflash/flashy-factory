@@ -67,12 +67,16 @@ The token inherits the permissions of its Asana user. Use a dedicated user with
 access only to the intended workspace and project when practical. The current
 worktree worker inherits host environment variables. A Docker worker needs an
 explicit credential injection policy; this repository does not provide one.
+Do not request Asana Full Permissions: a dedicated user with access to this
+project and its tasks is sufficient for the supported client operations.
 
 ## Configure polling
 
 The repository is preconfigured with:
 
 ```toml
+pull_request_reconcile_every = "60s"
+
 [source]
 command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
@@ -129,6 +133,27 @@ daemon; an unchanged waiting observation does not repeatedly enqueue work. The
 reconciliation workflow moves only a fully unblocked autonomous task to `Ready
 To Implement`, leaves a blocked task waiting, and sends an unsafe graph to
 `Needs Decision`. `factory:manual` tasks are excluded from this path.
+
+## Trusted pull-request reconciliation
+
+An autonomous implementation handoff records a link only when the runtime
+observes a canonical GitHub pull-request URL for the configured repository.
+Comments and task descriptions are never association inputs. Every 60 seconds,
+the daemon observes those linked PRs with authenticated `gh`; this polling does
+not occupy an implementation worker slot. It records a durable fingerprint of
+the PR state, head SHA, and reviews, so an unchanged response is consumed once
+across polls and daemon restarts.
+
+For a merged autonomous PR, the daemon re-reads Asana, moves the linked task to
+`Done`, completes it, and evaluates direct native dependents in the same pass.
+An eligible autonomous dependent moves to `Ready To Implement`. A closed but
+unmerged PR moves only its linked task to `Needs Decision`. Missing,
+cross-project, contradictory, inaccessible, or otherwise unsafe observations
+fail closed to `Needs Decision`; `factory:manual` work remains untouched.
+
+Operators need both the scoped Asana token above and an authenticated `gh`
+session permitted to read the repository's pull requests. This path never
+merges a PR, requests auto-merge, or enables auto-merge.
 
 For autonomous tasks, the source query additionally fetches the native Asana
 dependency graph. It persists the direct dependency GIDs and a stable revision

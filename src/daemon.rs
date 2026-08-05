@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
+use tokio::process::Command;
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -24,7 +25,7 @@ use crate::fleet::{
 };
 use crate::forge::{Forge, forge_for_with_github};
 use crate::github::{GitHubClient, LabelTicketContext, ProjectTicketContext, TicketContext};
-use crate::hash::sha256_hex_prefix;
+use crate::hash::{sha256_hex, sha256_hex_prefix};
 use crate::runtime::{
     AgentRuntime, ExecutionResult, RuntimeCancelled, RuntimeObservation, Termination,
     build_runtime, repository_observation_channel,
@@ -34,8 +35,9 @@ use crate::source::{
     PollReport, RepositoryPoll, SourceClient, SourceTicketContext, source_rate_limit,
 };
 use crate::storage::{
-    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, Run, RunOutcome, RunSandbox,
-    Task, TaskIdentity, TaskState, TaskWorkspace,
+    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, PullRequestEventState,
+    PullRequestObservation, Run, RunOutcome, RunSandbox, Task, TaskIdentity, TaskState,
+    TaskWorkspace,
 };
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint};
 use crate::workspace::{DeliveryReuse, WorkspaceManager};
@@ -1484,6 +1486,9 @@ impl FactoryDaemon {
             RECOVERY_POLL_INTERVAL,
         );
         recovery_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut pull_request_interval =
+            tokio::time::interval_at(Instant::now(), self.config.pull_request_reconcile_every);
+        pull_request_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let loop_result: Result<()> = async {
             loop {
@@ -1531,6 +1536,9 @@ impl FactoryDaemon {
                             &owner.id,
                         );
                         evaluate_schedules(&mut ledger, &mut schedules, Utc::now());
+                    }
+                    _ = pull_request_interval.tick() => {
+                        reconcile_pull_request_observations(&mut ledger, &targets).await?;
                     }
                     completed = source_polls.join_next(), if !source_polls.is_empty() => {
                         return completed
@@ -3910,7 +3918,7 @@ fn record_execution(
     } else {
         Ledger::finish_run_and_task
     };
-    finish(
+    let completed = finish(
         ledger,
         run_id,
         outcome,
@@ -3918,6 +3926,219 @@ fn record_execution(
         error.as_deref(),
         result.thread_id.as_deref(),
     )?;
+    // The runtime only records canonical URLs that matched the configured
+    // repository. Promote that evidence after a successful implementation
+    // handoff; arbitrary ticket text never becomes an association.
+    ledger.associate_successful_implementation_handoff(run_id, &completed.repository)?;
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitHubPullRequestObservation {
+    state: String,
+    merged_at: Option<String>,
+    head_ref_oid: String,
+    #[serde(default)]
+    reviews: Vec<serde_json::Map<String, serde_json::Value>>,
+}
+
+async fn reconcile_pull_request_observations(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+) -> Result<()> {
+    reconcile_pull_request_observations_with_gh(ledger, targets, Path::new("gh")).await
+}
+
+async fn reconcile_pull_request_observations_with_gh(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    gh: &Path,
+) -> Result<()> {
+    let Some(_reconciliation_lock) = ledger.try_acquire_pull_request_reconciliation_lock()? else {
+        return Ok(());
+    };
+    for (repository, target) in targets {
+        if target.provider != crate::repository::RepositoryProvider::GitHub {
+            continue;
+        }
+        for association in ledger.pull_request_associations(repository)? {
+            let output = Command::new(gh)
+                .args([
+                    "pr",
+                    "view",
+                    &association.pull_request,
+                    "--repo",
+                    repository,
+                    "--json",
+                    "state,mergedAt,headRefOid,reviews",
+                ])
+                .current_dir(&target.path)
+                .output()
+                .await;
+            let output = match output {
+                Ok(output) if output.status.success() => output,
+                Ok(output) => {
+                    eprintln!(
+                        "Flashy Factory PR reconciliation cannot access {}: {}",
+                        association.pull_request,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    reconcile_pull_request_event(
+                        ledger,
+                        repository,
+                        &association.task_gid,
+                        &target.path,
+                        "unsafe",
+                        &sha256_hex(format!("inaccessible:{}", association.pull_request)),
+                    )
+                    .await?;
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!("Flashy Factory PR reconciliation could not run gh: {error}");
+                    reconcile_pull_request_event(
+                        ledger,
+                        repository,
+                        &association.task_gid,
+                        &target.path,
+                        "unsafe",
+                        &sha256_hex(format!("gh-error:{}", association.pull_request)),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+            let github: GitHubPullRequestObservation = match serde_json::from_slice(&output.stdout)
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Flashy Factory PR reconciliation received invalid gh JSON: {error}");
+                    reconcile_pull_request_event(
+                        ledger,
+                        repository,
+                        &association.task_gid,
+                        &target.path,
+                        "unsafe",
+                        &sha256_hex(format!("malformed:{}", association.pull_request)),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+            let merged_at_is_valid = github
+                .merged_at
+                .as_deref()
+                .is_none_or(|value| DateTime::parse_from_rfc3339(value).is_ok());
+            let state = if merged_at_is_valid
+                && github.merged_at.is_some()
+                && matches!(github.state.as_str(), "CLOSED" | "MERGED")
+            {
+                "merged"
+            } else if merged_at_is_valid && github.merged_at.is_none() && github.state == "CLOSED" {
+                "closed"
+            } else if merged_at_is_valid && github.merged_at.is_none() && github.state == "OPEN" {
+                "open"
+            } else {
+                eprintln!("Flashy Factory PR reconciliation received unknown GitHub state");
+                reconcile_pull_request_event(
+                    ledger,
+                    repository,
+                    &association.task_gid,
+                    &target.path,
+                    "unsafe",
+                    &sha256_hex(format!("contradictory:{}", association.pull_request)),
+                )
+                .await?;
+                continue;
+            };
+            if github.head_ref_oid.len() != 40
+                || !github
+                    .head_ref_oid
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                eprintln!("Flashy Factory PR reconciliation received an invalid GitHub head SHA");
+                reconcile_pull_request_event(
+                    ledger,
+                    repository,
+                    &association.task_gid,
+                    &target.path,
+                    "unsafe",
+                    &sha256_hex(format!("invalid-head:{}", association.pull_request)),
+                )
+                .await?;
+                continue;
+            }
+            let mut reviews = github
+                .reviews
+                .iter()
+                .map(serde_json::to_string)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .context("failed to serialize GitHub review observation")?;
+            reviews.sort();
+            let observation = PullRequestObservation {
+                state: state.to_owned(),
+                head_sha: github.head_ref_oid,
+                review_fingerprint: sha256_hex(reviews.join("\n")),
+            };
+            let fingerprint = observation.fingerprint();
+            reconcile_pull_request_event(
+                ledger,
+                repository,
+                &association.task_gid,
+                &target.path,
+                state,
+                &fingerprint,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn reconcile_pull_request_event(
+    ledger: &mut Ledger,
+    repository: &str,
+    task_gid: &str,
+    repository_path: &Path,
+    outcome: &str,
+    fingerprint: &str,
+) -> Result<()> {
+    ledger.observe_pull_request_event(repository, task_gid, fingerprint)?;
+    match ledger.claim_pull_request_event(repository, task_gid, fingerprint)? {
+        Some(PullRequestEventState::Consumed) | None => return Ok(()),
+        Some(PullRequestEventState::AsanaApplied) => {
+            ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
+            return Ok(());
+        }
+        Some(PullRequestEventState::Observed | PullRequestEventState::Claimed) => {}
+    }
+    if outcome == "open" {
+        ledger.mark_pull_request_event_asana_applied(repository, task_gid, fingerprint)?;
+        ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
+        return Ok(());
+    }
+    let client = repository_path.join(".flashy-factory/clients/asana");
+    let result = Command::new(client)
+        .args(["reconcile-pr", task_gid, "--outcome", outcome])
+        .current_dir(repository_path)
+        .output()
+        .await;
+    match result {
+        Ok(result) if result.status.success() => {
+            ledger.mark_pull_request_event_asana_applied(repository, task_gid, fingerprint)?;
+            ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
+        }
+        Ok(result) => eprintln!(
+            "Flashy Factory Asana PR reconciliation failed for {task_gid}: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        ),
+        Err(error) => eprintln!(
+            "Flashy Factory could not start Asana PR reconciliation for {task_gid}: {error}"
+        ),
+    }
+    ledger.release_pull_request_event_claim(repository, task_gid, fingerprint)?;
     Ok(())
 }
 
@@ -3941,6 +4162,181 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
+
+    #[cfg(unix)]
+    fn mocked_reconciliation_target(
+        temp: &tempfile::TempDir,
+        gh_body: &str,
+        asana_body: &str,
+    ) -> (Ledger, HashMap<String, RepositoryTarget>, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repository = temp.path().join("repo");
+        let clients = repository.join(".flashy-factory/clients");
+        std::fs::create_dir_all(&clients).unwrap();
+        let calls = temp.path().join("asana-calls");
+        let asana = clients.join("asana");
+        std::fs::write(
+            &asana,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n{}\n",
+                calls.display(),
+                asana_body
+            ),
+        )
+        .unwrap();
+        let gh = temp.path().join("gh");
+        std::fs::write(&gh, format!("#!/bin/sh\n{}\n", gh_body)).unwrap();
+        for executable in [&asana, &gh] {
+            let mut permissions = std::fs::metadata(executable).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(executable, permissions).unwrap();
+        }
+        let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+        ledger
+            .record_pull_request_association(
+                "example/repo",
+                "task-42",
+                "https://github.com/example/repo/pull/42",
+            )
+            .unwrap();
+        let targets = HashMap::from([(
+            "example/repo".to_owned(),
+            RepositoryTarget {
+                path: repository,
+                provider: crate::repository::RepositoryProvider::GitHub,
+                identity: "example/repo".to_owned(),
+                workflows: HashMap::new(),
+            },
+        )]);
+        (ledger, targets, gh, calls)
+    }
+
+    #[cfg(unix)]
+    fn event_fingerprint(state: &str, head_sha: &str, reviews: &str) -> String {
+        PullRequestObservation {
+            state: state.into(),
+            head_sha: head_sha.into(),
+            review_fingerprint: sha256_hex(reviews),
+        }
+        .fingerprint()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mocked_gh_open_observation_is_consumed_once_without_an_asana_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut ledger, targets, gh, calls) = mocked_reconciliation_target(
+            &temp,
+            "printf '%s' '{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviews\":[]}'",
+            "exit 99",
+        );
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+        let fingerprint = event_fingerprint("open", &"a".repeat(40), "");
+        assert_eq!(
+            ledger
+                .pull_request_event_state("example/repo", "task-42", &fingerprint)
+                .unwrap(),
+            Some(PullRequestEventState::Consumed)
+        );
+        assert!(!calls.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mocked_gh_terminal_states_and_failures_route_once_and_survive_restart() {
+        for (name, gh_body, outcome, head) in [
+            (
+                "merged",
+                "printf '%s' '{\"state\":\"MERGED\",\"mergedAt\":\"2026-08-05T12:00:00Z\",\"headRefOid\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"reviews\":[{\"state\":\"APPROVED\"}]}'",
+                "merged",
+                "b".repeat(40),
+            ),
+            (
+                "closed",
+                "printf '%s' '{\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"cccccccccccccccccccccccccccccccccccccccc\",\"reviews\":[]}'",
+                "closed",
+                "c".repeat(40),
+            ),
+            (
+                "inaccessible",
+                "echo denied >&2; exit 1",
+                "unsafe",
+                "".into(),
+            ),
+            ("malformed", "printf '%s' 'not-json'", "unsafe", "".into()),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let (mut ledger, targets, gh, calls) =
+                mocked_reconciliation_target(&temp, gh_body, "exit 0");
+            reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+                .await
+                .unwrap();
+            drop(ledger);
+            let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+            reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+                .await
+                .unwrap();
+            let recorded = std::fs::read_to_string(&calls).unwrap();
+            assert_eq!(
+                recorded.lines().collect::<Vec<_>>(),
+                [format!("reconcile-pr task-42 --outcome {outcome}")],
+                "{name}"
+            );
+            if !head.is_empty() {
+                let reviews = if name == "merged" {
+                    "{\"state\":\"APPROVED\"}"
+                } else {
+                    ""
+                };
+                assert_eq!(
+                    ledger
+                        .pull_request_event_state(
+                            "example/repo",
+                            "task-42",
+                            &event_fingerprint(outcome, &head, reviews)
+                        )
+                        .unwrap(),
+                    Some(PullRequestEventState::Consumed)
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn changed_gh_fingerprint_replays_once_without_duplicate_asana_mutations() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("gh-state");
+        std::fs::write(&state, "a").unwrap();
+        let gh_body = format!(
+            "if [ \"$(cat {})\" = a ]; then printf '%s' '{{\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviews\":[]}}'; else printf '%s' '{{\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"dddddddddddddddddddddddddddddddddddddddd\",\"reviews\":[]}}'; fi",
+            state.display()
+        );
+        let (mut ledger, targets, gh, calls) =
+            mocked_reconciliation_target(&temp, &gh_body, "exit 0");
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+        std::fs::write(&state, "b").unwrap();
+        // A concurrent daemon may own the reconciliation lock for one poll;
+        // an unchanged observed fingerprint must be retried without creating
+        // more than its one additional Asana mutation.
+        for _ in 0..3 {
+            reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+                .await
+                .unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 2);
+    }
 
     #[cfg(unix)]
     struct RecordingRuntime {
@@ -4174,6 +4570,7 @@ mod tests {
                 identity: "acme/second".into(),
             },
             poll_every: Duration::from_secs(60),
+            pull_request_reconcile_every: Duration::from_secs(60),
             default_runtime: "codex".into(),
             default_timeout: Duration::from_secs(60),
             maximum_timeout: Duration::from_secs(3600),

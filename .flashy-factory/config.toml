@@ -1,5 +1,6 @@
 version = 1
 poll_every = "30s"
+pull_request_reconcile_every = "60s"
 
 [worker]
 runtime = "codex"

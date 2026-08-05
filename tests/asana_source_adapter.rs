@@ -654,6 +654,330 @@ fn dependency_state_fails_closed_for_malformed_cyclic_and_cross_project_graphs()
 }
 
 #[test]
+fn terminal_pr_reconciliation_preserves_manual_and_routes_contradictory_tasks() {
+    let parent = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:manual"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let (api_base, server) = serve(vec![Response {
+        status: "200 OK",
+        body: parent,
+        headers: &[],
+    }]);
+    let manual = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "merged"],
+    );
+    assert!(
+        manual.status.success(),
+        "{}",
+        String::from_utf8_lossy(&manual.stderr)
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+
+    let contradictory = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:manual"},{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: contradictory,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"decision","name":"Needs Decision"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+    ]);
+    let unsafe_task = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "unsafe"],
+    );
+    assert!(
+        unsafe_task.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unsafe_task.stderr)
+    );
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("POST /sections/decision/addTask"))
+    );
+}
+
+#[test]
+fn merged_pr_completion_and_eligible_dependent_release_are_atomic_after_reads() {
+    let parent = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let dependent = r#"{"data":{"gid":"task-43","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let dependency_state = r#"{"data":{"gid":"task-43","completed":false,"dependencies":[{"gid":"task-42"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#;
+    let terminal_parent_dependency = r#"{"data":{"gid":"task-42","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: parent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-43"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: dependent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: dependency_state,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: terminal_parent_dependency,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"},{"gid":"ready","name":"Ready To Implement"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"},{"gid":"ready","name":"Ready To Implement"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+    ]);
+    let output = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "merged"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        r#"{"status":"merged","released":["task-43"]}"#
+    );
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("POST /sections/done/addTask"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("PUT /tasks/task-42"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("POST /sections/ready/addTask"))
+    );
+}
+
+#[test]
+fn unsafe_dependent_routes_to_decision_and_ineligible_work_is_untouched() {
+    let parent = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let unsafe_dependent = r#"{"data":{"gid":"task-43","completed":false,"tags":[{"name":"factory:auto-to-pr"},{"name":"factory:manual"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: parent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-43"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: unsafe_dependent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"},{"gid":"decision","name":"Needs Decision"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"},{"gid":"decision","name":"Needs Decision"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+    ]);
+    let output = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "merged"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("POST /sections/decision/addTask"))
+    );
+
+    let (api_base, server) = serve(vec![Response {
+        status: "200 OK",
+        body: r#"{"data":{"gid":"task-42","completed":true,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Done"}}]}}"#,
+        headers: &[],
+    }]);
+    let output = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "closed"],
+    );
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        r#"{"status":"completed_untouched","released":[]}"#
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[test]
+fn dependency_read_failure_leaves_parent_and_dependents_unmodified() {
+    let parent = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let dependent = r#"{"data":{"gid":"task-43","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: parent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-43"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: dependent,
+            headers: &[],
+        },
+        Response {
+            status: "DISCONNECT",
+            body: "",
+            headers: &[],
+        },
+    ]);
+    let output = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "merged"],
+    );
+    assert!(!output.status.success());
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.head.starts_with("POST ") && !request.head.starts_with("PUT "))
+    );
+}
+
+#[test]
+fn merged_pr_replay_observes_live_state_without_duplicate_asana_mutations() {
+    let waiting = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
+    let completed = r#"{"data":{"gid":"task-42","completed":true,"tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Done"}}]}}"#;
+    let no_dependents = r#"{"data":[],"next_page":null}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: waiting,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: no_dependents,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: completed,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: no_dependents,
+            headers: &[],
+        },
+    ]);
+    for _ in 0..2 {
+        let output = run_client(
+            &api_base,
+            &["reconcile-pr", "task-42", "--outcome", "merged"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let requests = server.join().unwrap();
+    let mutations = requests
+        .iter()
+        .filter(|request| request.head.starts_with("POST ") || request.head.starts_with("PUT "))
+        .collect::<Vec<_>>();
+    assert_eq!(mutations.len(), 2);
+    assert!(mutations[0].head.starts_with("POST /sections/done/addTask"));
+    assert!(mutations[1].head.starts_with("PUT /tasks/task-42"));
+}
+
+#[test]
 fn autonomous_workflows_route_decisions_and_preserve_manual_approval() {
     let triage = include_str!("../.flashy-factory/workflows/triage.md");
     let implement = include_str!("../.flashy-factory/workflows/implement.md");

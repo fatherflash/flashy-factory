@@ -69,6 +69,7 @@ impl Fixture {
                 identity: "example/repo".to_owned(),
             },
             poll_every: Duration::from_millis(20),
+            pull_request_reconcile_every: Duration::from_secs(60),
             default_runtime: "codex".to_owned(),
             default_timeout: Duration::from_secs(120),
             maximum_timeout: Duration::from_secs(300),

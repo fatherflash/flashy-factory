@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,8 +9,10 @@ use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
+use crate::repository::{RepositoryProvider, recognize_change_request_url};
+
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -672,6 +675,44 @@ pub struct PollStatus {
     pub polled_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestAssociation {
+    pub repository: String,
+    pub task_gid: String,
+    pub pull_request: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestObservation {
+    pub state: String,
+    pub head_sha: String,
+    pub review_fingerprint: String,
+}
+
+/// A persisted event is deliberately advanced in small, durable steps. A
+/// failed external handoff returns `claimed` work to `observed`, while a
+/// successful handoff is durably consumed before another poll can repeat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestEventState {
+    Observed,
+    Claimed,
+    AsanaApplied,
+    Consumed,
+}
+
+const PULL_REQUEST_CLAIM_LEASE_MILLIS: i64 = 60_000;
+
+impl PullRequestObservation {
+    /// This is deliberately independent of poll time.  An unchanged GitHub
+    /// response must not keep creating events just because the daemon polls.
+    pub fn fingerprint(&self) -> String {
+        crate::hash::sha256_hex(format!(
+            "state={};head={};reviews={}",
+            self.state, self.head_sha, self.review_fingerprint
+        ))
+    }
+}
+
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
@@ -682,7 +723,304 @@ pub struct StateLockGuard {
     _file: File,
 }
 
+pub struct PullRequestReconciliationGuard {
+    _file: File,
+}
+
 impl Ledger {
+    /// Serializes the full external reconciliation handoff. The SQLite claim
+    /// protects durable state; this file lock also prevents a second daemon
+    /// from reclaiming an expired lease while the first is still in Asana.
+    pub fn try_acquire_pull_request_reconciliation_lock(
+        &self,
+    ) -> Result<Option<PullRequestReconciliationGuard>> {
+        let lock = open_state_lock(&path_with_suffix(&self.path, ".pr-reconcile"))?;
+        match lock.try_lock_exclusive() {
+            Ok(()) => Ok(Some(PullRequestReconciliationGuard { _file: lock })),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error).context("failed to lock pull-request reconciliation"),
+        }
+    }
+
+    pub fn associate_successful_implementation_handoff(
+        &mut self,
+        run_id: i64,
+        repository: &str,
+    ) -> Result<()> {
+        let association = self
+            .connection
+            .query_row(
+                "SELECT tasks.source_item, runs.pull_request, tasks.payload
+             FROM runs JOIN tasks ON tasks.id = runs.task_id
+             WHERE runs.id = ?1 AND runs.outcome = 'succeeded'
+               AND runs.repository = ?2 AND tasks.repository = ?2
+               AND tasks.workflow = 'implement' AND runs.workflow = 'implement'
+               AND tasks.source_item IS NOT NULL AND runs.pull_request IS NOT NULL",
+                params![run_id, repository],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .context("failed to resolve implementation handoff")?;
+        if let Some((task_gid, pull_request, payload)) = association {
+            let labels = payload
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|value| {
+                    value
+                        .get("labels")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                })
+                .unwrap_or_default();
+            let names = labels
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>();
+            if names.contains(&"factory:auto-to-pr") && !names.contains(&"factory:manual") {
+                self.record_pull_request_association(repository, &task_gid, &pull_request)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Records the canonical GitHub pull request observed by the runtime when
+    /// an implementation run hands work to human review. This table is never
+    /// an import path for arbitrary Asana comments or task descriptions.
+    pub fn record_pull_request_association(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        pull_request: &str,
+    ) -> Result<()> {
+        if repository.trim().is_empty()
+            || task_gid.trim().is_empty()
+            || pull_request.trim().is_empty()
+        {
+            bail!("pull-request association fields must not be empty");
+        }
+        let canonical = recognize_change_request_url(
+            RepositoryProvider::GitHub,
+            repository,
+            pull_request,
+        )
+        .context("pull-request association must use a canonical URL for the configured GitHub repository")?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin pull-request association transaction")?;
+        let existing: Option<String> = transaction.query_row(
+            "SELECT pull_request FROM autonomous_pull_requests WHERE repository = ?1 AND task_gid = ?2",
+            params![repository, task_gid], |row| row.get(0),
+        ).optional()?;
+        if let Some(existing) = existing {
+            if existing != canonical {
+                bail!("task {task_gid} already has a contradictory pull-request association");
+            }
+        } else {
+            transaction.execute(
+                "INSERT INTO autonomous_pull_requests (repository, task_gid, pull_request, associated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![repository, task_gid, canonical, now_millis()?],
+            ).context("failed to persist pull-request association")?;
+        }
+        transaction
+            .commit()
+            .context("failed to commit pull-request association")
+    }
+
+    pub fn pull_request_associations(
+        &self,
+        repository: &str,
+    ) -> Result<Vec<PullRequestAssociation>> {
+        let mut statement = self.connection.prepare(
+            "SELECT repository, task_gid, pull_request FROM autonomous_pull_requests
+             WHERE repository = ?1 ORDER BY associated_at, task_gid",
+        )?;
+        statement
+            .query_map([repository], |row| {
+                Ok(PullRequestAssociation {
+                    repository: row.get(0)?,
+                    task_gid: row.get(1)?,
+                    pull_request: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("failed to read pull-request associations")
+    }
+
+    pub fn observe_pull_request_event(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<bool> {
+        if repository.trim().is_empty()
+            || task_gid.trim().is_empty()
+            || fingerprint.len() != 64
+            || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("pull-request event must have a repository, task GID, and SHA-256 fingerprint");
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin pull-request event transaction")?;
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO autonomous_pull_request_events
+             (repository, task_gid, fingerprint, state, observed_at) VALUES (?1, ?2, ?3, 'observed', ?4)",
+            params![repository, task_gid, fingerprint, now_millis()?],
+        )? == 1;
+        transaction
+            .commit()
+            .context("failed to commit pull-request event")?;
+        Ok(inserted)
+    }
+
+    pub fn claim_pull_request_event(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<Option<PullRequestEventState>> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to begin pull-request event claim transaction")?;
+        let state: Option<(String, Option<i64>)> = transaction
+            .query_row(
+                "SELECT state, claimed_at FROM autonomous_pull_request_events
+             WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3",
+                params![repository, task_gid, fingerprint],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((state, claimed_at)) = state else {
+            return Ok(None);
+        };
+        let state = pull_request_event_state(&state)?;
+        let now = now_millis()?;
+        let stale_before = now.saturating_sub(PULL_REQUEST_CLAIM_LEASE_MILLIS);
+        let claimed = if state == PullRequestEventState::Observed {
+            transaction.execute(
+                "UPDATE autonomous_pull_request_events SET state = 'claimed', claimed_at = ?4
+                 WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3 AND state = 'observed'",
+                params![repository, task_gid, fingerprint, now],
+            )? == 1
+        } else if state == PullRequestEventState::Claimed
+            && claimed_at.is_some_and(|claimed_at| claimed_at <= stale_before)
+        {
+            transaction.execute(
+                "UPDATE autonomous_pull_request_events SET claimed_at = ?4
+                 WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3
+                   AND state = 'claimed' AND claimed_at <= ?5",
+                params![repository, task_gid, fingerprint, now, stale_before],
+            )? == 1
+        } else {
+            false
+        };
+        transaction
+            .commit()
+            .context("failed to commit pull-request event claim")?;
+        if claimed {
+            Ok(Some(PullRequestEventState::Observed))
+        } else if matches!(
+            state,
+            PullRequestEventState::AsanaApplied | PullRequestEventState::Consumed
+        ) {
+            Ok(Some(state))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Makes a crashed daemon's expired external handoff eligible for replay.
+    /// Live claims remain protected by the same lease used by atomic claiming.
+    pub fn recover_expired_pull_request_event_claims(&mut self, now: i64) -> Result<usize> {
+        let stale_before = now.saturating_sub(PULL_REQUEST_CLAIM_LEASE_MILLIS);
+        self.connection
+            .execute(
+                "UPDATE autonomous_pull_request_events SET state = 'observed', claimed_at = NULL
+                 WHERE state = 'claimed' AND claimed_at <= ?1",
+                [stale_before],
+            )
+            .context("failed to recover expired pull-request event claims")
+    }
+
+    /// Releases an unsuccessful external handoff so a later poll can retry it.
+    /// A competing daemon cannot release work it did not claim because only the
+    /// durable `claimed` state is eligible.
+    pub fn release_pull_request_event_claim(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<()> {
+        validate_pull_request_event_key(repository, task_gid, fingerprint)?;
+        self.connection.execute(
+            "UPDATE autonomous_pull_request_events SET state = 'observed', claimed_at = NULL
+             WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3 AND state = 'claimed'",
+            params![repository, task_gid, fingerprint],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_pull_request_event_asana_applied(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE autonomous_pull_request_events SET state = 'asana_applied', applied_at = ?4
+             WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3
+               AND state IN ('observed', 'claimed')",
+            params![repository, task_gid, fingerprint, now_millis()?],
+        )?;
+        Ok(())
+    }
+
+    pub fn consume_pull_request_event(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<()> {
+        validate_pull_request_event_key(repository, task_gid, fingerprint)?;
+        self.connection.execute(
+            "UPDATE autonomous_pull_request_events SET state = 'consumed', consumed_at = ?4
+             WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3
+               AND state IN ('observed', 'claimed', 'asana_applied')",
+            params![repository, task_gid, fingerprint, now_millis()?],
+        )?;
+        Ok(())
+    }
+
+    pub fn pull_request_event_state(
+        &self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<Option<PullRequestEventState>> {
+        let state: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT state FROM autonomous_pull_request_events
+                 WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3",
+                params![repository, task_gid, fingerprint],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed to query pull-request event consumption")?;
+        state
+            .map(|state| pull_request_event_state(&state))
+            .transpose()
+    }
     pub fn project_claim_matches(
         &self,
         task_id: i64,
@@ -2986,6 +3324,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 12 {
             migrate_v12(connection)?;
         }
+        if version < 13 {
+            migrate_v13(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -3336,6 +3677,61 @@ fn migrate_v12(connection: &Connection) -> Result<()> {
              PRAGMA user_version = 12;",
         )
         .context("failed to migrate SQLite ledger to version 12")?;
+    Ok(())
+}
+
+fn migrate_v13(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE autonomous_pull_requests (
+             repository TEXT NOT NULL,
+             task_gid TEXT NOT NULL,
+             pull_request TEXT NOT NULL,
+             associated_at INTEGER NOT NULL,
+             PRIMARY KEY(repository, task_gid),
+             UNIQUE(repository, pull_request)
+         );
+         CREATE TABLE autonomous_pull_request_events (
+             repository TEXT NOT NULL,
+             task_gid TEXT NOT NULL,
+             fingerprint TEXT NOT NULL,
+             state TEXT NOT NULL CHECK(state IN ('observed', 'claimed', 'asana_applied', 'consumed')),
+             observed_at INTEGER NOT NULL,
+             claimed_at INTEGER,
+             applied_at INTEGER,
+             consumed_at INTEGER,
+             PRIMARY KEY(repository, task_gid, fingerprint)
+         );
+         INSERT INTO schema_migrations(version, applied_at)
+             VALUES (13, unixepoch('subsec') * 1000);
+         PRAGMA user_version = 13;",
+        )
+        .context("failed to migrate SQLite ledger to version 13")?;
+    Ok(())
+}
+
+fn pull_request_event_state(value: &str) -> Result<PullRequestEventState> {
+    match value {
+        "observed" => Ok(PullRequestEventState::Observed),
+        "claimed" => Ok(PullRequestEventState::Claimed),
+        "asana_applied" => Ok(PullRequestEventState::AsanaApplied),
+        "consumed" => Ok(PullRequestEventState::Consumed),
+        _ => bail!("invalid durable pull-request event state"),
+    }
+}
+
+fn validate_pull_request_event_key(
+    repository: &str,
+    task_gid: &str,
+    fingerprint: &str,
+) -> Result<()> {
+    if repository.trim().is_empty()
+        || task_gid.trim().is_empty()
+        || fingerprint.len() != 64
+        || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("pull-request event must have a repository, task GID, and SHA-256 fingerprint");
+    }
     Ok(())
 }
 

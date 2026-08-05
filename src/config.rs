@@ -26,6 +26,7 @@ pub struct Config {
     pub repositories: Vec<PathBuf>,
     pub repository: RepositoryConfig,
     pub poll_every: Duration,
+    pub pull_request_reconcile_every: Duration,
     pub default_runtime: String,
     pub default_timeout: Duration,
     pub maximum_timeout: Duration,
@@ -120,11 +121,17 @@ pub struct GitHubConfig {
 struct RawConfig {
     version: u8,
     poll_every: String,
+    #[serde(default = "default_pull_request_reconcile_every")]
+    pull_request_reconcile_every: String,
     repository: Option<RawRepositoryConfig>,
     worker: RawWorkerConfig,
     source: RawSourceConfig,
     #[serde(rename = "trigger")]
     triggers: BTreeMap<String, RawTriggerConfig>,
+}
+
+fn default_pull_request_reconcile_every() -> String {
+    "60s".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,6 +307,10 @@ impl Config {
         }
 
         let poll_every = parse_positive_duration("poll_every", &raw.poll_every)?;
+        let pull_request_reconcile_every = parse_positive_duration(
+            "pull_request_reconcile_every",
+            &raw.pull_request_reconcile_every,
+        )?;
         let default_timeout = parse_positive_duration("worker.timeout", &raw.worker.timeout)?;
         let maximum_timeout = parse_positive_duration(
             "worker.maximum_timeout",
@@ -350,6 +361,7 @@ impl Config {
             repositories: vec![repository],
             repository: repository_config,
             poll_every,
+            pull_request_reconcile_every,
             default_runtime,
             default_timeout,
             maximum_timeout,
@@ -383,6 +395,11 @@ impl fmt::Display for Config {
             formatter,
             "poll_every: {}",
             humantime::format_duration(self.poll_every)
+        )?;
+        writeln!(
+            formatter,
+            "pull_request_reconcile_every: {}",
+            humantime::format_duration(self.pull_request_reconcile_every)
         )?;
         writeln!(formatter, "worker.runtime: {}", self.default_runtime)?;
         writeln!(
