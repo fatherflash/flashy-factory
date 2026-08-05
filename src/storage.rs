@@ -746,6 +746,7 @@ impl Ledger {
         &mut self,
         run_id: i64,
         repository: &str,
+        provider: RepositoryProvider,
     ) -> Result<()> {
         let association = self
             .connection
@@ -783,7 +784,12 @@ impl Ledger {
                 .filter_map(serde_json::Value::as_str)
                 .collect::<Vec<_>>();
             if names.contains(&"factory:auto-to-pr") && !names.contains(&"factory:manual") {
-                self.record_pull_request_association(repository, &task_gid, &pull_request)?;
+                self.record_pull_request_association(
+                    provider,
+                    repository,
+                    &task_gid,
+                    &pull_request,
+                )?;
             }
         }
         Ok(())
@@ -794,6 +800,7 @@ impl Ledger {
     /// an import path for arbitrary Asana comments or task descriptions.
     pub fn record_pull_request_association(
         &mut self,
+        provider: RepositoryProvider,
         repository: &str,
         task_gid: &str,
         pull_request: &str,
@@ -804,12 +811,9 @@ impl Ledger {
         {
             bail!("pull-request association fields must not be empty");
         }
-        let canonical = recognize_change_request_url(
-            RepositoryProvider::GitHub,
-            repository,
-            pull_request,
-        )
-        .context("pull-request association must use a canonical URL for the configured GitHub repository")?;
+        let canonical = recognize_change_request_url(provider, repository, pull_request).context(
+            "pull-request association must use a canonical URL for the configured repository",
+        )?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)

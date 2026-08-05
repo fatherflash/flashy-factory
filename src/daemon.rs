@@ -3096,7 +3096,7 @@ async fn execute_sandbox_task(
                 )?;
                 return Err(error.context(detail));
             }
-            record_execution(&mut ledger, run_id, "codex", &result)?;
+            record_execution(&mut ledger, run_id, "codex", repository.provider, &result)?;
             ledger.finish_run_sandbox(
                 run_id,
                 "removing",
@@ -3338,7 +3338,13 @@ async fn execute_task_inner(
                 Termination::Exited => "failed",
             };
             let detail = format_execution_detail(&result);
-            record_execution(&mut ledger, run_id, &workflow.runtime, &result)?;
+            record_execution(
+                &mut ledger,
+                run_id,
+                &workflow.runtime,
+                repository.provider,
+                &result,
+            )?;
             Ok((outcome, detail))
         }
         Err(error) => {
@@ -3910,6 +3916,7 @@ fn record_execution(
     ledger: &mut Ledger,
     run_id: i64,
     runtime: &str,
+    provider: crate::repository::RepositoryProvider,
     result: &ExecutionResult,
 ) -> Result<()> {
     let (outcome, error) = execution_outcome(runtime, result);
@@ -3929,58 +3936,79 @@ fn record_execution(
     // The runtime only records canonical URLs that matched the configured
     // repository. Promote that evidence after a successful implementation
     // handoff; arbitrary ticket text never becomes an association.
-    ledger.associate_successful_implementation_handoff(run_id, &completed.repository)?;
+    ledger.associate_successful_implementation_handoff(run_id, &completed.repository, provider)?;
     Ok(())
 }
 
+/// Provider-specific CLIs are normalized at this boundary.  Everything below
+/// this point works only with a trusted, canonical change-request observation.
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GitHubPullRequestObservation {
+struct ChangeRequestObservation {
     state: String,
-    merged_at: Option<String>,
-    head_ref_oid: String,
     #[serde(default)]
-    reviews: Vec<serde_json::Map<String, serde_json::Value>>,
+    merged_at: Option<String>,
+    head_sha: String,
+    #[serde(default)]
+    reviews: Vec<serde_json::Value>,
 }
 
 async fn reconcile_pull_request_observations(
     ledger: &mut Ledger,
     targets: &HashMap<String, RepositoryTarget>,
 ) -> Result<()> {
-    reconcile_pull_request_observations_with_gh(ledger, targets, Path::new("gh")).await
+    reconcile_pull_request_observations_with_commands(
+        ledger,
+        targets,
+        Path::new("gh"),
+        Path::new("glab"),
+    )
+    .await
 }
 
+#[cfg(test)]
 async fn reconcile_pull_request_observations_with_gh(
     ledger: &mut Ledger,
     targets: &HashMap<String, RepositoryTarget>,
     gh: &Path,
 ) -> Result<()> {
+    reconcile_pull_request_observations_with_commands(ledger, targets, gh, Path::new("glab")).await
+}
+
+async fn reconcile_pull_request_observations_with_commands(
+    ledger: &mut Ledger,
+    targets: &HashMap<String, RepositoryTarget>,
+    gh: &Path,
+    glab: &Path,
+) -> Result<()> {
     let Some(_reconciliation_lock) = ledger.try_acquire_pull_request_reconciliation_lock()? else {
         return Ok(());
     };
     for (repository, target) in targets {
-        if target.provider != crate::repository::RepositoryProvider::GitHub {
-            continue;
-        }
         for association in ledger.pull_request_associations(repository)? {
-            let output = Command::new(gh)
-                .args([
-                    "pr",
-                    "view",
-                    &association.pull_request,
-                    "--repo",
+            if crate::repository::recognize_change_request_url(
+                target.provider,
+                repository,
+                &association.pull_request,
+            )
+            .is_none()
+            {
+                reconcile_pull_request_event(
+                    ledger,
                     repository,
-                    "--json",
-                    "state,mergedAt,headRefOid,reviews",
-                ])
-                .current_dir(&target.path)
-                .output()
-                .await;
+                    &association.task_gid,
+                    &target.path,
+                    "unsafe",
+                    &sha256_hex(format!("cross-repository:{}", association.pull_request)),
+                )
+                .await?;
+                continue;
+            }
+            let output = observe_change_request(target, &association.pull_request, gh, glab).await;
             let output = match output {
                 Ok(output) if output.status.success() => output,
                 Ok(output) => {
                     eprintln!(
-                        "Flashy Factory PR reconciliation cannot access {}: {}",
+                        "Flashy Factory change-request reconciliation cannot access {}: {}",
                         association.pull_request,
                         String::from_utf8_lossy(&output.stderr).trim()
                     );
@@ -3996,7 +4024,10 @@ async fn reconcile_pull_request_observations_with_gh(
                     continue;
                 }
                 Err(error) => {
-                    eprintln!("Flashy Factory PR reconciliation could not run gh: {error}");
+                    eprintln!(
+                        "Flashy Factory change-request reconciliation could not run {}: {error}",
+                        target.provider
+                    );
                     reconcile_pull_request_event(
                         ledger,
                         repository,
@@ -4009,11 +4040,52 @@ async fn reconcile_pull_request_observations_with_gh(
                     continue;
                 }
             };
-            let github: GitHubPullRequestObservation = match serde_json::from_slice(&output.stdout)
-            {
+            let parsed = match target.provider {
+                crate::repository::RepositoryProvider::GitHub => {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase")]
+                    struct GitHubObservation {
+                        state: String,
+                        merged_at: Option<String>,
+                        head_ref_oid: String,
+                        #[serde(default)]
+                        reviews: Vec<serde_json::Value>,
+                    }
+                    serde_json::from_slice::<GitHubObservation>(&output.stdout).map(|value| {
+                        ChangeRequestObservation {
+                            state: value.state,
+                            merged_at: value.merged_at,
+                            head_sha: value.head_ref_oid,
+                            reviews: value.reviews,
+                        }
+                    })
+                }
+                crate::repository::RepositoryProvider::GitLab => {
+                    #[derive(serde::Deserialize)]
+                    struct GitLabObservation {
+                        state: String,
+                        merged_at: Option<String>,
+                        sha: String,
+                        #[serde(default)]
+                        approved_by: Vec<serde_json::Value>,
+                    }
+                    serde_json::from_slice::<GitLabObservation>(&output.stdout).map(|value| {
+                        ChangeRequestObservation {
+                            state: value.state,
+                            merged_at: value.merged_at,
+                            head_sha: value.sha,
+                            reviews: value.approved_by,
+                        }
+                    })
+                }
+            };
+            let observation: ChangeRequestObservation = match parsed {
                 Ok(value) => value,
                 Err(error) => {
-                    eprintln!("Flashy Factory PR reconciliation received invalid gh JSON: {error}");
+                    eprintln!(
+                        "Flashy Factory change-request reconciliation received invalid {} JSON: {error}",
+                        target.provider
+                    );
                     reconcile_pull_request_event(
                         ledger,
                         repository,
@@ -4026,21 +4098,29 @@ async fn reconcile_pull_request_observations_with_gh(
                     continue;
                 }
             };
-            let merged_at_is_valid = github
+            let merged_at_is_valid = observation
                 .merged_at
                 .as_deref()
                 .is_none_or(|value| DateTime::parse_from_rfc3339(value).is_ok());
             let state = if merged_at_is_valid
-                && github.merged_at.is_some()
-                && matches!(github.state.as_str(), "CLOSED" | "MERGED")
+                && observation.merged_at.is_some()
+                && matches!(observation.state.as_str(), "CLOSED" | "MERGED" | "merged")
             {
                 "merged"
-            } else if merged_at_is_valid && github.merged_at.is_none() && github.state == "CLOSED" {
+            } else if merged_at_is_valid
+                && observation.merged_at.is_none()
+                && matches!(observation.state.as_str(), "CLOSED" | "closed")
+            {
                 "closed"
-            } else if merged_at_is_valid && github.merged_at.is_none() && github.state == "OPEN" {
+            } else if merged_at_is_valid
+                && observation.merged_at.is_none()
+                && matches!(observation.state.as_str(), "OPEN" | "opened")
+            {
                 "open"
             } else {
-                eprintln!("Flashy Factory PR reconciliation received unknown GitHub state");
+                eprintln!(
+                    "Flashy Factory change-request reconciliation received an unknown provider state"
+                );
                 reconcile_pull_request_event(
                     ledger,
                     repository,
@@ -4052,13 +4132,15 @@ async fn reconcile_pull_request_observations_with_gh(
                 .await?;
                 continue;
             };
-            if github.head_ref_oid.len() != 40
-                || !github
-                    .head_ref_oid
+            if observation.head_sha.len() != 40
+                || !observation
+                    .head_sha
                     .bytes()
                     .all(|byte| byte.is_ascii_hexdigit())
             {
-                eprintln!("Flashy Factory PR reconciliation received an invalid GitHub head SHA");
+                eprintln!(
+                    "Flashy Factory change-request reconciliation received an invalid head SHA"
+                );
                 reconcile_pull_request_event(
                     ledger,
                     repository,
@@ -4070,16 +4152,16 @@ async fn reconcile_pull_request_observations_with_gh(
                 .await?;
                 continue;
             }
-            let mut reviews = github
+            let mut reviews = observation
                 .reviews
                 .iter()
                 .map(serde_json::to_string)
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .context("failed to serialize GitHub review observation")?;
+                .context("failed to serialize review observation")?;
             reviews.sort();
             let observation = PullRequestObservation {
                 state: state.to_owned(),
-                head_sha: github.head_ref_oid,
+                head_sha: observation.head_sha,
                 review_fingerprint: sha256_hex(reviews.join("\n")),
             };
             let fingerprint = observation.fingerprint();
@@ -4095,6 +4177,45 @@ async fn reconcile_pull_request_observations_with_gh(
         }
     }
     Ok(())
+}
+
+async fn observe_change_request(
+    target: &RepositoryTarget,
+    url: &str,
+    gh: &Path,
+    glab: &Path,
+) -> std::io::Result<std::process::Output> {
+    match target.provider {
+        crate::repository::RepositoryProvider::GitHub => {
+            Command::new(gh)
+                .args([
+                    "pr",
+                    "view",
+                    url,
+                    "--repo",
+                    &target.identity,
+                    "--json",
+                    "state,mergedAt,headRefOid,reviews",
+                ])
+                .current_dir(&target.path)
+                .output()
+                .await
+        }
+        crate::repository::RepositoryProvider::GitLab => {
+            let iid = url.rsplit('/').next().unwrap_or_default();
+            let project = target
+                .identity
+                .strip_prefix("gitlab.com/")
+                .unwrap_or_default()
+                .replace('/', "%2F");
+            let endpoint = format!("projects/{project}/merge_requests/{iid}");
+            Command::new(glab)
+                .args(["api", &endpoint])
+                .current_dir(&target.path)
+                .output()
+                .await
+        }
+    }
 }
 
 async fn reconcile_pull_request_event(
@@ -4195,6 +4316,7 @@ mod tests {
         let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
         ledger
             .record_pull_request_association(
+                crate::repository::RepositoryProvider::GitHub,
                 "example/repo",
                 "task-42",
                 "https://github.com/example/repo/pull/42",
@@ -4336,6 +4458,103 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mocked_gitlab_observations_share_the_durable_reconciliation_lifecycle() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for (name, glab_body, outcome) in [
+            (
+                "open",
+                "printf '%s' '{\"state\":\"opened\",\"merged_at\":null,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"approved_by\":[]}'",
+                None,
+            ),
+            (
+                "merged",
+                "printf '%s' '{\"state\":\"merged\",\"merged_at\":\"2026-08-05T12:00:00Z\",\"sha\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"approved_by\":[{\"user\":{\"id\":1}}]}'",
+                Some("merged"),
+            ),
+            (
+                "closed",
+                "printf '%s' '{\"state\":\"closed\",\"merged_at\":null,\"sha\":\"cccccccccccccccccccccccccccccccccccccccc\",\"approved_by\":[]}'",
+                Some("closed"),
+            ),
+            ("inaccessible", "echo denied >&2; exit 1", Some("unsafe")),
+            ("malformed", "printf '%s' not-json", Some("unsafe")),
+            (
+                "contradictory",
+                "printf '%s' '{\"state\":\"opened\",\"merged_at\":\"2026-08-05T12:00:00Z\",\"sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"approved_by\":[]}'",
+                Some("unsafe"),
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let repository = temp.path().join("repo");
+            let clients = repository.join(".flashy-factory/clients");
+            std::fs::create_dir_all(&clients).unwrap();
+            let calls = temp.path().join("asana-calls");
+            let asana = clients.join("asana");
+            std::fs::write(
+                &asana,
+                format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n", calls.display()),
+            )
+            .unwrap();
+            let glab = temp.path().join("glab");
+            std::fs::write(&glab, format!("#!/bin/sh\n{glab_body}\n")).unwrap();
+            for executable in [&asana, &glab] {
+                let mut permissions = std::fs::metadata(executable).unwrap().permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(executable, permissions).unwrap();
+            }
+            let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+            ledger
+                .record_pull_request_association(
+                    crate::repository::RepositoryProvider::GitLab,
+                    "gitlab.com/group/subgroup/repo",
+                    "task-42",
+                    "https://gitlab.com/group/subgroup/repo/-/merge_requests/42",
+                )
+                .unwrap();
+            let targets = HashMap::from([(
+                "gitlab.com/group/subgroup/repo".to_owned(),
+                RepositoryTarget {
+                    path: repository,
+                    provider: crate::repository::RepositoryProvider::GitLab,
+                    identity: "gitlab.com/group/subgroup/repo".to_owned(),
+                    workflows: HashMap::new(),
+                },
+            )]);
+            reconcile_pull_request_observations_with_commands(
+                &mut ledger,
+                &targets,
+                Path::new("gh-not-used"),
+                &glab,
+            )
+            .await
+            .unwrap();
+            drop(ledger);
+            let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+            reconcile_pull_request_observations_with_commands(
+                &mut ledger,
+                &targets,
+                Path::new("gh-not-used"),
+                &glab,
+            )
+            .await
+            .unwrap();
+            match outcome {
+                Some(outcome) => assert_eq!(
+                    std::fs::read_to_string(&calls)
+                        .unwrap()
+                        .lines()
+                        .collect::<Vec<_>>(),
+                    [format!("reconcile-pr task-42 --outcome {outcome}")],
+                    "{name}"
+                ),
+                None => assert!(!calls.exists(), "{name}"),
+            }
+        }
     }
 
     #[cfg(unix)]

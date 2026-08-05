@@ -8,6 +8,7 @@ use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use std::process::Command;
 
+use factory::repository::RepositoryProvider;
 use factory::storage::{
     ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
     ObservedTicket, PullRequestEventState, PullRequestObservation, RunContainer, RunOutcome,
@@ -1877,6 +1878,7 @@ fn pull_request_event_consumption_is_durable_and_idempotent() {
     let mut ledger = Ledger::open(&path).unwrap();
     ledger
         .record_pull_request_association(
+            RepositoryProvider::GitHub,
             "acme/repository",
             "asana-42",
             "https://github.com/acme/repository/pull/42",
@@ -1885,6 +1887,7 @@ fn pull_request_event_consumption_is_durable_and_idempotent() {
     assert!(
         ledger
             .record_pull_request_association(
+                RepositoryProvider::GitHub,
                 "acme/repository",
                 "asana-42",
                 "https://github.com/acme/repository/pull/43",
@@ -2020,7 +2023,12 @@ fn pull_request_associations_reject_untrusted_urls() {
     ] {
         assert!(
             ledger
-                .record_pull_request_association("acme/repository", "asana-42", url)
+                .record_pull_request_association(
+                    RepositoryProvider::GitHub,
+                    "acme/repository",
+                    "asana-42",
+                    url,
+                )
                 .is_err(),
             "{url}"
         );
@@ -2028,6 +2036,30 @@ fn pull_request_associations_reject_untrusted_urls() {
     assert!(
         ledger
             .consume_pull_request_event("acme/repository", "asana-42", "not-a-fingerprint")
+            .is_err()
+    );
+}
+
+#[test]
+fn pull_request_associations_accept_only_the_configured_gitlab_merge_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    ledger
+        .record_pull_request_association(
+            RepositoryProvider::GitLab,
+            "gitlab.com/acme/platform/repository",
+            "asana-42",
+            "https://gitlab.com/acme/platform/repository/-/merge_requests/42",
+        )
+        .unwrap();
+    assert!(
+        ledger
+            .record_pull_request_association(
+                RepositoryProvider::GitLab,
+                "gitlab.com/acme/platform/repository",
+                "asana-43",
+                "https://gitlab.com/acme/other/-/merge_requests/42",
+            )
             .is_err()
     );
 }
