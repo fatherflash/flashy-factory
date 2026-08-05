@@ -116,24 +116,29 @@ Run:
 
 The command owns the mutation sequence:
 
-1. verify the OAuth token's app identity, remaining lifetime, and required
-   scopes before project access;
-2. resolve the exact existing `Backlog` section, selected authorization tag,
-   and, for autonomous delivery, `Ready For Spec` section;
-3. derive and preflight a deterministic external identity for every task,
+1. verify the OAuth token's app identity, remaining lifetime, and the available
+   `tasks:read`, `tasks:write`, `projects:read`, and `tags:read` scopes before
+   project access; do not request Full Permissions;
+2. read the configured `ASANA_BACKLOG_SECTION_WITNESS_TASK_GID` and require an
+   exact membership pairing `ASANA_PROJECT_GID` with
+   `ASANA_BACKLOG_SECTION_GID`; for autonomous delivery do the same for the
+   Ready For Spec pair. Missing, inaccessible, cross-project, or wrong-section
+   witnesses fail before mutation. Do not use project-section discovery here;
+3. resolve the selected authorization tag;
+4. derive and preflight a deterministic external identity for every task,
    reserving a batch-level identity on the canonical first task, binding the
    canonical policy/task/dependency definition, and reusing only exact
    project/content matches;
-4. create every missing task in `Backlog` and capture returned GIDs; if a create
+5. create every missing task in `Backlog` and capture returned GIDs; if a create
    response is lost, use bounded, backoff-aware external-identity lookups
    without retrying the create request;
-5. only when every task exists, add native Asana dependency edges;
-6. read dependent tasks back and verify every requested edge;
-7. remove the opposite authorization tag and apply the selected existing tag
+6. only when every task exists, add native Asana dependency edges;
+7. read dependent tasks back and verify every requested edge;
+8. remove the opposite authorization tag and apply the selected existing tag
    to every successfully verified connected component;
-8. move verified autonomous components to `Ready For Spec` while leaving
+9. move verified autonomous components to `Ready For Spec` while leaving
    manual components in `Backlog`; and
-9. read every component back and require exactly the selected authorization
+10. read every component back and require exactly the selected authorization
    tag and expected section before reporting success.
 
 The exact tags are `factory:auto-to-pr` and `factory:manual`. The command must

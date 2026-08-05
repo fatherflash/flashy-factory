@@ -35,7 +35,6 @@ AUTHORIZATION_TAGS = {
     "autonomous_to_pr": "factory:auto-to-pr",
 }
 REQUIRED_BATCH_OAUTH_SCOPES = {
-    "project_sections:read",
     "projects:read",
     "tags:read",
     "tasks:read",
@@ -200,7 +199,10 @@ class AsanaClient:
             raise ClientError("ASANA_OAUTH_ACCESS_TOKEN is inactive")
         if payload.get("token_type") != "bearer":
             raise ClientError("ASANA_OAUTH_ACCESS_TOKEN is not a bearer token")
-        if payload.get("client_id") != self.oauth_client_id:
+        token_client_id = payload.get("client_id")
+        if isinstance(token_client_id, int) and not isinstance(token_client_id, bool):
+            token_client_id = str(token_client_id)
+        if token_client_id != self.oauth_client_id:
             raise ClientError(
                 "ASANA_OAUTH_ACCESS_TOKEN does not belong to ASANA_OAUTH_CLIENT_ID"
             )
@@ -216,6 +218,12 @@ class AsanaClient:
             raise ClientError(
                 "ASANA_OAUTH_ACCESS_TOKEN is missing scopes: "
                 + ", ".join(missing_scopes)
+            )
+        unexpected_scopes = sorted(scopes - REQUIRED_BATCH_OAUTH_SCOPES)
+        if unexpected_scopes:
+            raise ClientError(
+                "ASANA_OAUTH_ACCESS_TOKEN has disallowed scopes: "
+                + ", ".join(unexpected_scopes)
             )
 
     @staticmethod
@@ -367,6 +375,50 @@ def resolve_section(client: AsanaClient, project_gid: str, name: str) -> dict[st
         )
     require_gid("section.gid", matches[0].get("gid"))
     return matches[0]
+
+
+def configured_batch_section(
+    client: AsanaClient,
+    project_gid: str,
+    *,
+    section_environment: str,
+    witness_environment: str,
+    label: str,
+) -> str:
+    """Validate an explicitly configured section through an in-project witness task.
+
+    Listing project sections requires broader Asana permissions than the batch OAuth
+    app is allowed to hold.  A readable task membership is a narrow, project-bound
+    witness that prevents a configured GID from being used to mutate another project.
+    """
+    section_gid = require_gid(section_environment, os.environ.get(section_environment))
+    witness_gid = require_gid(witness_environment, os.environ.get(witness_environment))
+    payload = client.request(
+        "GET",
+        f"/tasks/{encoded_gid(witness_gid)}",
+        query={"opt_fields": "gid,memberships.project.gid,memberships.section.gid"},
+    )
+    witness = payload.get("data")
+    if not isinstance(witness, dict):
+        raise ClientError(f"{label} witness task returned invalid data")
+    memberships = witness.get("memberships")
+    if not isinstance(memberships, list):
+        memberships = []
+    matches = [
+        membership
+        for membership in memberships
+        if isinstance(membership, dict)
+        and isinstance(membership.get("project"), dict)
+        and isinstance(membership.get("section"), dict)
+        and membership["project"].get("gid") == project_gid
+        and membership["section"].get("gid") == section_gid
+    ]
+    if len(matches) != 1:
+        raise ClientError(
+            f"{label} witness task {witness_gid} must have exactly one membership "
+            f"in ASANA_PROJECT_GID {project_gid} and section {section_gid}"
+        )
+    return section_gid
 
 
 def resolve_tag(client: AsanaClient, workspace_gid: str, name: str) -> dict[str, Any]:
@@ -620,18 +672,10 @@ def parse_batch_manifest(
             task["notes"] = notes
         custom_fields = raw_task.get("custom_fields")
         if custom_fields is not None:
-            if not isinstance(custom_fields, dict):
-                raise ClientError(f"{field}.custom_fields must be an object")
-            validated_custom_fields: dict[str, str] = {}
-            for field_gid, option_gid in custom_fields.items():
-                if not isinstance(field_gid, str) or not isinstance(option_gid, str):
-                    raise ClientError(
-                        f"{field}.custom_fields keys and values must be GID strings"
-                    )
-                validated_custom_fields[
-                    require_gid(f"{field}.custom_fields field GID", field_gid)
-                ] = require_gid(f"{field}.custom_fields option GID", option_gid)
-            task["custom_fields"] = validated_custom_fields
+            raise ClientError(
+                f"{field}.custom_fields is unavailable to narrow-scope batch-create; "
+                "it would require custom_fields:read"
+            )
         tasks.append(task)
 
     dependencies = manifest.get("dependencies")
@@ -843,8 +887,7 @@ def get_external_task(
             query={
                 "opt_fields": (
                     "gid,name,notes,completed,external.gid,external.data,"
-                    "memberships.project.gid,memberships.section.gid,"
-                    "custom_fields.gid,custom_fields.enum_value.gid"
+                    "memberships.project.gid,memberships.section.gid"
                 )
             },
         )
@@ -907,21 +950,6 @@ def verify_external_task(
     ):
         raise ClientError(
             f"external creation identity {external_gid!r} has mismatched live content"
-        )
-    custom_fields = (
-        task.get("custom_fields") if isinstance(task.get("custom_fields"), list) else []
-    )
-    live_custom_fields = {
-        str(field.get("gid")): str(field["enum_value"].get("gid"))
-        for field in custom_fields
-        if isinstance(field, dict)
-        and field.get("gid") is not None
-        and isinstance(field.get("enum_value"), dict)
-        and field["enum_value"].get("gid") is not None
-    }
-    if live_custom_fields != expected_task.get("custom_fields", {}):
-        raise ClientError(
-            f"external creation identity {external_gid!r} has mismatched custom fields"
         )
     memberships = (
         task.get("memberships") if isinstance(task.get("memberships"), list) else []
@@ -1152,13 +1180,21 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
         "ASANA_WORKSPACE_GID", os.environ.get("ASANA_WORKSPACE_GID")
     )
 
-    backlog = resolve_section(client, project_gid, BACKLOG_SECTION)
-    backlog_gid = require_gid("Backlog section.gid", backlog.get("gid"))
+    backlog_gid = configured_batch_section(
+        client,
+        project_gid,
+        section_environment="ASANA_BACKLOG_SECTION_GID",
+        witness_environment="ASANA_BACKLOG_SECTION_WITNESS_TASK_GID",
+        label=BACKLOG_SECTION,
+    )
     ready_for_spec_gid: str | None = None
     if delivery_policy == "autonomous_to_pr":
-        ready_for_spec = resolve_section(client, project_gid, READY_FOR_SPEC_SECTION)
-        ready_for_spec_gid = require_gid(
-            "Ready For Spec section.gid", ready_for_spec.get("gid")
+        ready_for_spec_gid = configured_batch_section(
+            client,
+            project_gid,
+            section_environment="ASANA_READY_FOR_SPEC_SECTION_GID",
+            witness_environment="ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID",
+            label=READY_FOR_SPEC_SECTION,
         )
     authorization_tags = resolve_authorization_tags(client, workspace_gid)
 
@@ -1193,36 +1229,29 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
             )
             sources[task["ref"]] = "reused"
 
-    created: list[dict[str, Any]] = []
     failed_tasks: list[dict[str, str]] = []
     creation_recoveries: list[dict[str, str]] = []
     unreconciled_external_identities: list[dict[str, str]] = []
-    for task in tasks:
+    anchor_task = next(task for task in tasks if task["ref"] == batch_anchor_ref)
+    creation_order = [anchor_task, *[task for task in tasks if task is not anchor_task]]
+    for task in creation_order:
         if task["ref"] in gids:
-            created.append(
-                {
-                    "ref": task["ref"],
-                    "gid": gids[task["ref"]],
-                    "source": sources[task["ref"]],
-                }
-            )
             continue
         external_gid, external_data = external_identities[task["ref"]]
         data: dict[str, Any] = {
             "name": task["name"],
-            "memberships": [{"project": project_gid, "section": backlog_gid}],
+            "projects": [project_gid],
             "external": {"gid": external_gid, "data": external_data},
         }
         if "notes" in task:
             data["notes"] = task["notes"]
-        if "custom_fields" in task:
-            data["custom_fields"] = task["custom_fields"]
         try:
             payload = client.request("POST", "/tasks", data=data)
             created_task = payload.get("data")
             if not isinstance(created_task, dict):
                 raise ClientError("Asana task creation returned invalid data")
             gid = require_gid("created task.gid", created_task.get("gid"))
+            mutate_section(client, gid, backlog_gid)
             if gid in gids.values():
                 raise ClientError(f"Asana returned duplicate created task GID {gid}")
             source = "created"
@@ -1262,6 +1291,8 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
                         ),
                     }
                 )
+                if task["ref"] == batch_anchor_ref:
+                    break
                 continue
         if gid in gids.values():
             failed_tasks.append(
@@ -1273,7 +1304,16 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
             continue
         gids[task["ref"]] = gid
         sources[task["ref"]] = source
-        created.append({"ref": task["ref"], "gid": gid, "source": source})
+
+    created = [
+        {
+            "ref": task["ref"],
+            "gid": gids[task["ref"]],
+            "source": sources[task["ref"]],
+        }
+        for task in tasks
+        if task["ref"] in gids
+    ]
 
     requested_edges = [f"{dependent} -> {blocker}" for dependent, blocker in edges]
     report: dict[str, Any] = {

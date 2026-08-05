@@ -23,14 +23,70 @@ fn serve(responses: Vec<Response>) -> (String, thread::JoinHandle<Vec<Request>>)
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     let handle = thread::spawn(move || {
-        responses
-            .into_iter()
-            .map(|response| {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request = read_request(&mut stream);
-                if response.status == "DISCONNECT" {
-                    return request;
+        let mut responses = responses.into_iter().peekable();
+        let mut requests = Vec::new();
+        let mut initial_creation_moves_remaining = 0;
+        while responses.peek().is_some() {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            if request.head.starts_with("GET /tasks/witness-") {
+                let project = if request
+                    .head
+                    .starts_with("GET /tasks/witness-project-mismatch")
+                {
+                    "other-project"
+                } else {
+                    "project-1"
+                };
+                let section = if request
+                    .head
+                    .starts_with("GET /tasks/witness-section-mismatch")
+                {
+                    "other-section"
+                } else if request.head.starts_with("GET /tasks/witness-ready") {
+                    "section-ready"
+                } else {
+                    "section-backlog"
+                };
+                let body = format!(
+                    r#"{{"data":{{"gid":"witness","memberships":[{{"project":{{"gid":"{project}"}},"section":{{"gid":"{section}"}}}}]}}}}"#
+                );
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                let is_mismatch = request
+                    .head
+                    .starts_with("GET /tasks/witness-project-mismatch")
+                    || request
+                        .head
+                        .starts_with("GET /tasks/witness-section-mismatch");
+                requests.push(request);
+                if is_mismatch {
+                    break;
                 }
+                continue;
+            }
+            if request
+                .head
+                .starts_with("POST /sections/section-backlog/addTask ")
+                && initial_creation_moves_remaining > 0
+            {
+                let body = r#"{"data":{}}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                requests.push(request);
+                initial_creation_moves_remaining -= 1;
+                continue;
+            }
+            while responses.peek().is_some_and(|response| {
+                (response.body.contains(r#""name":"Backlog""#)
+                    || response.body.contains(r#""name":"Ready For Spec""#))
+                    && !request.head.starts_with("GET /projects/")
+            }) {
+                responses.next();
+            }
+            let response = responses.next().expect("unexpected request");
+            if response.status == "201 Created" {
+                initial_creation_moves_remaining += 1;
+            }
+            if response.status != "DISCONNECT" {
                 write!(
                     stream,
                     "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -42,9 +98,10 @@ fn serve(responses: Vec<Response>) -> (String, thread::JoinHandle<Vec<Request>>)
                     write!(stream, "{name}: {value}\r\n").unwrap();
                 }
                 write!(stream, "\r\n{}", response.body).unwrap();
-                request
-            })
-            .collect()
+            }
+            requests.push(request);
+        }
+        requests
     });
     (address, handle)
 }
@@ -113,7 +170,7 @@ fn run_batch(api_base: &str, mut manifest: serde_json::Value) -> Output {
     fs::write(&input, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let (token_info_url, token_server) = serve(vec![Response {
         status: "200 OK",
-        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read project_sections:read tags:read","client_id":"oauth-client"}"#,
+        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":1217184666380172}"#,
         headers: &[],
     }]);
     let mut command = Command::new(client());
@@ -122,7 +179,14 @@ fn run_batch(api_base: &str, mut manifest: serde_json::Value) -> Output {
     command
         .env("ASANA_AUTH_MODE", "oauth")
         .env("ASANA_OAUTH_ACCESS_TOKEN", "test-oauth-secret")
-        .env("ASANA_OAUTH_CLIENT_ID", "oauth-client")
+        .env("ASANA_OAUTH_CLIENT_ID", "1217184666380172")
+        .env("ASANA_BACKLOG_SECTION_GID", "section-backlog")
+        .env("ASANA_BACKLOG_SECTION_WITNESS_TASK_GID", "witness-backlog")
+        .env("ASANA_READY_FOR_SPEC_SECTION_GID", "section-ready")
+        .env(
+            "ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID",
+            "witness-ready",
+        )
         .env(
             "ASANA_TOKEN_INFO_URL",
             format!("{token_info_url}/-/token_info"),
@@ -693,12 +757,33 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
     );
 
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 21);
-    for request in &requests[6..9] {
+    assert_eq!(requests.len(), 24);
+    assert!(requests[0].head.starts_with("GET /tasks/witness-backlog?"));
+    assert!(requests[1].head.starts_with("GET /tasks/witness-ready?"));
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.head.starts_with("GET /projects/project-1/sections"))
+    );
+    let creation_requests = requests
+        .iter()
+        .filter(|request| request.head.starts_with("POST /tasks "))
+        .collect::<Vec<_>>();
+    assert_eq!(creation_requests.len(), 3);
+    for request in creation_requests {
         assert!(request.head.starts_with("POST /tasks "));
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-        assert_eq!(body["data"]["memberships"][0]["section"], "section-backlog");
+        assert_eq!(body["data"]["projects"][0], "project-1");
     }
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request
+                .head
+                .starts_with("POST /sections/section-backlog/addTask "))
+            .count(),
+        3
+    );
     assert_eq!(
         requests
             .iter()
@@ -722,6 +807,72 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
             .count(),
         3
     );
+}
+
+#[test]
+fn asana_batch_fails_closed_when_witness_configuration_is_missing_or_mismatched() {
+    let manifest = serde_json::json!({
+        "batch_creation_id": "test-batch",
+        "delivery_policy": "backlog_only",
+        "dependencies": "independent",
+        "tasks": [task("a", "A")]
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("batch.json");
+    fs::write(&input, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    for (witness, expected) in [
+        (
+            None,
+            "ASANA_BACKLOG_SECTION_WITNESS_TASK_GID must be a valid Asana GID",
+        ),
+        (
+            Some("witness-project-mismatch"),
+            "must have exactly one membership",
+        ),
+        (
+            Some("witness-section-mismatch"),
+            "must have exactly one membership",
+        ),
+    ] {
+        let (api_base, api_server) = serve(vec![Response {
+            status: "200 OK",
+            body: r#"{"data":[]}"#,
+            headers: &[],
+        }]);
+        let (token_info_url, token_server) = serve(vec![Response {
+            status: "200 OK",
+            body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":1217184666380172}"#,
+            headers: &[],
+        }]);
+        let mut command = Command::new(client());
+        command.args(["batch-create", "--input", input.to_str().unwrap()]);
+        configured(&mut command, &api_base);
+        command
+            .env("ASANA_AUTH_MODE", "oauth")
+            .env("ASANA_OAUTH_ACCESS_TOKEN", "test-oauth-secret")
+            .env("ASANA_OAUTH_CLIENT_ID", "1217184666380172")
+            .env(
+                "ASANA_TOKEN_INFO_URL",
+                format!("{token_info_url}/-/token_info"),
+            )
+            .env("ASANA_BACKLOG_SECTION_GID", "section-backlog");
+        if let Some(witness) = witness {
+            command.env("ASANA_BACKLOG_SECTION_WITNESS_TASK_GID", witness);
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+        if witness.is_some() {
+            let requests = api_server.join().unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|request| request.head.starts_with("POST "))
+            );
+        }
+        assert_eq!(token_server.join().unwrap().len(), 1);
+    }
 }
 
 #[test]
@@ -771,20 +922,24 @@ fn asana_batch_keeps_manual_tasks_in_backlog_with_the_manual_tag() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["components"][0]["status"], "manual_backlog");
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 7);
+    assert_eq!(requests.len(), 8);
     assert!(
-        requests[5]
+        requests[6]
             .head
             .starts_with("POST /tasks/task-manual/addTag ")
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&requests[5].body).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&requests[6].body).unwrap(),
         serde_json::json!({"data":{"tag":"tag-manual"}})
     );
-    assert!(
-        !requests
+    assert_eq!(
+        requests
             .iter()
-            .any(|request| request.head.contains("/addTask "))
+            .filter(|request| request
+                .head
+                .starts_with("POST /sections/section-backlog/addTask "))
+            .count(),
+        1
     );
 }
 
@@ -810,12 +965,12 @@ fn asana_batch_writes_then_verifies_a_listed_chain() {
         missing_external_task(),
         Response {
             status: "201 Created",
-            body: r#"{"data":{"gid":"task-schema"}}"#,
+            body: r#"{"data":{"gid":"task-api"}}"#,
             headers: &[],
         },
         Response {
             status: "201 Created",
-            body: r#"{"data":{"gid":"task-api"}}"#,
+            body: r#"{"data":{"gid":"task-schema"}}"#,
             headers: &[],
         },
         Response {
@@ -887,16 +1042,16 @@ fn asana_batch_writes_then_verifies_a_listed_chain() {
     assert_eq!(report["missing_edges"], serde_json::json!([]));
     let requests = server.join().unwrap();
     assert!(
-        requests[7]
+        requests[9]
             .head
             .starts_with("POST /tasks/task-api/addDependencies ")
     );
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&requests[7].body).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&requests[9].body).unwrap(),
         serde_json::json!({"data":{"dependencies":["task-schema"]}})
     );
-    assert!(requests[8].head.starts_with("GET /tasks/task-api?"));
-    assert!(requests[8].head.contains("dependencies.gid"));
+    assert!(requests[10].head.starts_with("GET /tasks/task-api?"));
+    assert!(requests[10].head.contains("dependencies.gid"));
 }
 
 #[test]
@@ -921,7 +1076,7 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
         missing_external_task(),
         Response {
             status: "201 Created",
-            body: r#"{"data":{"gid":"task-schema"}}"#,
+            body: r#"{"data":{"gid":"task-api"}}"#,
             headers: &[],
         },
         Response {
@@ -949,7 +1104,7 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-schema","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"tags":[{"gid":"tag-manual"}]}}"#,
+            body: r#"{"data":{"gid":"task-api","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"tags":[{"gid":"tag-manual"}]}}"#,
             headers: &[],
         },
     ]);
@@ -966,11 +1121,12 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
     );
     assert!(!output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["created_tasks"][0]["gid"], "task-schema");
-    assert_eq!(report["failed_tasks"][0]["ref"], "api");
+    assert_eq!(report["created_tasks"][0]["ref"], "api");
+    assert_eq!(report["created_tasks"][0]["gid"], "task-api");
+    assert_eq!(report["failed_tasks"][0]["ref"], "schema");
     assert_eq!(
         report["unreconciled_external_identities"][0]["external_gid"],
-        "flashy-factory:test-batch:batch"
+        "flashy-factory:test-batch:task:schema"
     );
     assert_eq!(
         report["missing_edges"],
@@ -979,7 +1135,7 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
     let requests = server.join().unwrap();
     assert_eq!(
         requests.len(),
-        14,
+        15,
         "partial creation must stop before wiring and verify manual fallback"
     );
     assert_eq!(
@@ -987,9 +1143,15 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
         "manual_backlog_partial_create"
     );
     assert!(
-        requests[12]
+        requests[13]
             .head
-            .starts_with("POST /tasks/task-schema/addTag ")
+            .starts_with("POST /tasks/task-api/addTag ")
+    );
+    assert!(requests[5].head.starts_with("POST /tasks "));
+    let created_anchor: serde_json::Value = serde_json::from_str(&requests[5].body).unwrap();
+    assert_eq!(
+        created_anchor["data"]["external"]["gid"],
+        "flashy-factory:test-batch:batch"
     );
 }
 
@@ -1120,14 +1282,14 @@ fn asana_batch_partial_edge_failure_authorizes_only_unaffected_components() {
     );
     assert_eq!(report["components"][1]["status"], "ready_for_spec");
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 23);
+    assert_eq!(requests.len(), 26);
     assert!(
-        requests[20]
+        requests[23]
             .head
             .starts_with("POST /tasks/task-docs/addTag ")
     );
     assert!(
-        requests[21]
+        requests[24]
             .head
             .starts_with("POST /sections/section-ready/addTask ")
     );
@@ -1225,14 +1387,14 @@ fn asana_batch_rolls_a_failed_authorization_back_to_backlog() {
         "backlog_authorization_failed"
     );
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 12);
+    assert_eq!(requests.len(), 13);
     assert!(
-        requests[8]
+        requests[9]
             .head
             .starts_with("POST /sections/section-backlog/addTask ")
     );
     assert!(
-        requests[9]
+        requests[10]
             .head
             .starts_with("POST /tasks/task-a/removeTag ")
     );
@@ -1331,7 +1493,7 @@ fn asana_batch_detects_dual_tags_and_verifies_the_safe_downgrade() {
                     && failure["error"].as_str().unwrap().contains("tag-manual")
             })
     );
-    assert_eq!(server.join().unwrap().len(), 13);
+    assert_eq!(server.join().unwrap().len(), 14);
 }
 
 #[test]
@@ -1463,7 +1625,7 @@ fn asana_batch_reports_exact_unsafe_gids_when_multitask_rollback_cannot_be_verif
         report["components"][0]["unsafe_task_gids"],
         serde_json::json!(["task-b"])
     );
-    assert_eq!(server.join().unwrap().len(), 23);
+    assert_eq!(server.join().unwrap().len(), 25);
 }
 
 #[test]
@@ -1927,11 +2089,15 @@ fn asana_batch_requires_the_configured_oauth_app_and_scopes() {
             "missing scopes",
         ),
         (
-            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read project_sections:read tags:read","client_id":"other-client"}"#,
+            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":"other-client"}"#,
             "does not belong",
         ),
         (
-            r#"{"active":true,"token_type":"bearer","expires_in":299,"scope":"tasks:read tasks:write projects:read project_sections:read tags:read","client_id":"oauth-client"}"#,
+            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"oauth-client"}"#,
+            "disallowed scopes",
+        ),
+        (
+            r#"{"active":true,"token_type":"bearer","expires_in":299,"scope":"tasks:read tasks:write projects:read tags:read","client_id":"oauth-client"}"#,
             "at least five minutes",
         ),
     ] {
@@ -1962,6 +2128,45 @@ fn asana_batch_requires_the_configured_oauth_app_and_scopes() {
         );
         assert_eq!(token_server.join().unwrap().len(), 1);
     }
+}
+
+#[test]
+fn asana_batch_rejects_disallowed_scopes_before_contacting_the_asana_api() {
+    let manifest = serde_json::json!({
+        "batch_creation_id": "test-batch",
+        "delivery_policy": "backlog_only",
+        "dependencies": "independent",
+        "tasks": [task("a", "A")]
+    });
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("batch.json");
+    fs::write(&input, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let api_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    api_listener.set_nonblocking(true).unwrap();
+    let api_base = format!("http://{}/api/1.0", api_listener.local_addr().unwrap());
+    let (token_info_url, token_server) = serve(vec![Response {
+        status: "200 OK",
+        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"oauth-client"}"#,
+        headers: &[],
+    }]);
+    let mut command = Command::new(client());
+    command.args(["batch-create", "--input", input.to_str().unwrap()]);
+    configured(&mut command, &api_base);
+    command
+        .env("ASANA_AUTH_MODE", "oauth")
+        .env("ASANA_OAUTH_ACCESS_TOKEN", "test-oauth-secret")
+        .env("ASANA_OAUTH_CLIENT_ID", "oauth-client")
+        .env(
+            "ASANA_TOKEN_INFO_URL",
+            format!("{token_info_url}/-/token_info"),
+        );
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("disallowed scopes"));
+    assert!(
+        matches!(api_listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert_eq!(token_server.join().unwrap().len(), 1);
 }
 
 #[test]
@@ -2009,4 +2214,19 @@ fn asana_batch_rejects_invalid_graphs_and_batch_size_before_mutation() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn asana_batch_rejects_custom_fields_without_requesting_a_broader_scope() {
+    let output = run_invalid_batch(serde_json::json!({
+        "delivery_policy": "backlog_only",
+        "dependencies": "independent",
+        "tasks": [{
+            "ref": "a",
+            "name": "A",
+            "custom_fields": {"field-1": "option-1"}
+        }]
+    }));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("custom_fields:read"));
 }

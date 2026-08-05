@@ -169,12 +169,21 @@ environment:
 export ASANA_AUTH_MODE="oauth"
 export ASANA_OAUTH_CLIENT_ID="..."
 export ASANA_OAUTH_ACCESS_TOKEN="..."
+export ASANA_BACKLOG_SECTION_GID="..."
+export ASANA_BACKLOG_SECTION_WITNESS_TASK_GID="..."
+export ASANA_READY_FOR_SPEC_SECTION_GID="..."
+export ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID="..."
 ```
 
 The token must be active, belong to `ASANA_OAUTH_CLIENT_ID`, have at least five
-minutes remaining, and include `tasks:read`, `tasks:write`, `projects:read`,
-`project_sections:read`, and `tags:read`. The client verifies those properties
-with Asana's token-info endpoint before reading or mutating the project. Keep
+minutes remaining, and include only `tasks:read`, `tasks:write`,
+`projects:read`, and `tags:read`; never enable Asana Full Permissions. During
+`batch-create`, configured section GIDs are not trusted alone. The client reads
+each configured witness task and requires exactly one membership pairing the
+configured project and section. `backlog_only` validates the Backlog pair;
+`autonomous_to_pr` validates both pairs. A missing, inaccessible, wrong-project,
+or wrong-section witness stops before any task creation. The client does not
+call the project-section discovery endpoint in this command. Keep
 the access token in an OS secret manager or service environment. Never put an
 access token, refresh token, or client secret in the manifest, command line,
 repository, task notes, logs, or shell history.
@@ -193,6 +202,9 @@ task after the first depend on the task immediately before it.
 The operation accepts at most 25 tasks. It rejects unknown task references,
 self-dependencies, duplicate edges, cycles, and graphs over Asana's limit of 30
 combined dependencies and dependents per task before creating anything.
+It also rejects `custom_fields` in a batch manifest: verifying those values on
+a retry would require `custom_fields:read`, which is outside this app's fixed
+narrow OAuth scope set.
 
 All tasks are created in `Backlog` before any edge is written. The client then
 adds native dependencies, reads every dependent task back, and authorizes only
