@@ -198,7 +198,7 @@ enum RawTriggerConfig {
         labels: Vec<String>,
         workflow: String,
         timeout: Option<String>,
-        agent_profile: Option<String>,
+        agent_profile: String,
     },
     Status {
         status: String,
@@ -626,7 +626,7 @@ fn resolve_triggers(
                             state,
                             labels: resolved_labels,
                         },
-                        agent_profile.unwrap_or_else(|| agent_profiles.keys().next().expect("profiles were validated non-empty").clone()),
+                        agent_profile,
                     )
                 }
                 RawTriggerConfig::Status {
