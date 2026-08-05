@@ -79,18 +79,21 @@ impl Fixture {
             data_directory: temp.path().join("data"),
             execution_mode: ExecutionMode::Worktree,
             worker: None,
+            agent_profiles: std::collections::BTreeMap::from([("test".to_owned(), factory::config::AgentProfile { model: "gpt-5.3-codex".to_owned(), reasoning_effort: "high".to_owned(), service_tier: "priority".to_owned() })]),
             triggers: vec![
                 TriggerConfig {
                     id: "triage".to_owned(),
                     workflow: repository.join(".flashy-factory/workflows/triage.md"),
                     timeout: Duration::from_secs(120),
                     kind: TriggerKind::Status("Ready For Spec".to_owned()),
+                    agent_profile: "test".to_owned(),
                 },
                 TriggerConfig {
                     id: "implement".to_owned(),
                     workflow: repository.join(".flashy-factory/workflows/implement.md"),
                     timeout: Duration::from_secs(120),
                     kind: TriggerKind::Status("Ready To Implement".to_owned()),
+                    agent_profile: "test".to_owned(),
                 },
             ],
             source: Some(source),

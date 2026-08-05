@@ -627,6 +627,16 @@ fn default_config(
         "--max-results",
         "200",
     ]));
+    document["agent_profile"] = Item::Table(Table::new());
+    for (name, model, reasoning_effort, service_tier) in [
+        ("specification", "gpt-5.3-codex", "high", "priority"),
+        ("implementation", "gpt-5.3-codex", "xhigh", "priority"),
+    ] {
+        document["agent_profile"][name] = Item::Table(Table::new());
+        document["agent_profile"][name]["model"] = value(model);
+        document["agent_profile"][name]["reasoning_effort"] = value(reasoning_effort);
+        document["agent_profile"][name]["service_tier"] = value(service_tier);
+    }
     document["trigger"] = Item::Table(Table::new());
     document["trigger"]["triage"] = Item::Table(Table::new());
     document["trigger"]["triage"]["type"] = value("source");
@@ -635,6 +645,7 @@ fn default_config(
         toml_edit::value(toml_edit::Array::from_iter(["factory:auto-to-pr"]));
     document["trigger"]["triage"]["workflow"] =
         value(format!("{config_directory}/workflows/triage.md"));
+    document["trigger"]["triage"]["agent_profile"] = value("specification");
     document["trigger"]["triage-manual"] = Item::Table(Table::new());
     document["trigger"]["triage-manual"]["type"] = value("source");
     document["trigger"]["triage-manual"]["state"] = value("Ready For Spec");
@@ -642,6 +653,7 @@ fn default_config(
         toml_edit::value(toml_edit::Array::from_iter(["factory:manual"]));
     document["trigger"]["triage-manual"]["workflow"] =
         value(format!("{config_directory}/workflows/triage.md"));
+    document["trigger"]["triage-manual"]["agent_profile"] = value("specification");
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
     document["trigger"]["implement"]["state"] = value("Ready To Implement");
@@ -650,6 +662,7 @@ fn default_config(
     document["trigger"]["implement"]["workflow"] =
         value(format!("{config_directory}/workflows/implement.md"));
     document["trigger"]["implement"]["timeout"] = value("4h");
+    document["trigger"]["implement"]["agent_profile"] = value("implementation");
     document["trigger"]["reconcile-dependencies"] = Item::Table(Table::new());
     document["trigger"]["reconcile-dependencies"]["type"] = value("source");
     document["trigger"]["reconcile-dependencies"]["state"] =
@@ -659,6 +672,7 @@ fn default_config(
     document["trigger"]["reconcile-dependencies"]["workflow"] = value(format!(
         "{config_directory}/workflows/reconcile-dependencies.md"
     ));
+    document["trigger"]["reconcile-dependencies"]["agent_profile"] = value("specification");
     document["trigger"]["implement-manual"] = Item::Table(Table::new());
     document["trigger"]["implement-manual"]["type"] = value("source");
     document["trigger"]["implement-manual"]["state"] = value("Ready To Implement");
@@ -667,12 +681,14 @@ fn default_config(
     document["trigger"]["implement-manual"]["workflow"] =
         value(format!("{config_directory}/workflows/implement.md"));
     document["trigger"]["implement-manual"]["timeout"] = value("4h");
+    document["trigger"]["implement-manual"]["agent_profile"] = value("implementation");
     document["trigger"]["bug-finder"] = Item::Table(Table::new());
     document["trigger"]["bug-finder"]["type"] = value("schedule");
     document["trigger"]["bug-finder"]["schedule"] = value("0 9 * * 1");
     document["trigger"]["bug-finder"]["timezone"] = value("Europe/London");
     document["trigger"]["bug-finder"]["workflow"] =
         value(format!("{config_directory}/workflows/bug-finder.md"));
+    document["trigger"]["bug-finder"]["agent_profile"] = value("specification");
     document.to_string()
 }
 

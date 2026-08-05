@@ -102,10 +102,16 @@ project_number = 16
 status_field = "Status"
 trusted_users = ["example"]
 
+[agent_profile.test]
+model = "gpt-5.3-codex"
+reasoning_effort = "high"
+service_tier = "priority"
+
 [trigger.implement]
 type = "label"
 label = "agent:ready"
 workflow = ".flashy-factory/workflows/implement.md"
+agent_profile = "test"
 "#,
     )
     .unwrap();

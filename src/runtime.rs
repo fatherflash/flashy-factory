@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
+use crate::config::AgentProfile;
 use crate::repository::{
     RepositoryProvider, recognize_change_request_url as recognize_repository_change_request_url,
 };
@@ -111,6 +112,7 @@ pub trait AgentRuntime: Send + Sync {
         prompt: &str,
         working_directory: &Path,
         run_timeout: Duration,
+        agent_profile: Option<&AgentProfile>,
         cancellation: CancellationToken,
         resume_session: Option<&str>,
         observations: watch::Sender<RuntimeObservation>,
@@ -381,6 +383,7 @@ impl CodexRuntime {
             prompt,
             working_directory,
             run_timeout,
+            None,
             cancellation,
             resume_session,
             observations,
@@ -407,6 +410,7 @@ impl CodexRuntime {
             prompt,
             working_directory,
             run_timeout,
+            None,
             cancellation,
             resume_session,
             observations,
@@ -421,6 +425,7 @@ impl CodexRuntime {
         prompt: &str,
         working_directory: &Path,
         run_timeout: Duration,
+        agent_profile: Option<&AgentProfile>,
         cancellation: CancellationToken,
         resume_session: Option<&str>,
         observations: watch::Sender<RuntimeObservation>,
@@ -436,6 +441,16 @@ impl CodexRuntime {
             .into_temp_path();
         let mut command = Command::new(&self.executable);
         command.arg("exec");
+        if let Some(profile) = agent_profile {
+            command.arg("--model").arg(&profile.model);
+            command.arg("--config").arg(format!(
+                "model_reasoning_effort={:?}",
+                profile.reasoning_effort
+            ));
+            command
+                .arg("--config")
+                .arg(format!("service_tier={:?}", profile.service_tier));
+        }
         if let Some(session_id) = resume_session {
             command.arg("resume");
             command
@@ -715,6 +730,7 @@ impl AgentRuntime for CodexRuntime {
         prompt: &str,
         working_directory: &Path,
         run_timeout: Duration,
+        agent_profile: Option<&AgentProfile>,
         cancellation: CancellationToken,
         resume_session: Option<&str>,
         observations: watch::Sender<RuntimeObservation>,
@@ -724,6 +740,7 @@ impl AgentRuntime for CodexRuntime {
             prompt,
             working_directory,
             run_timeout,
+            agent_profile,
             cancellation,
             resume_session,
             observations,
@@ -1612,6 +1629,7 @@ impl AgentRuntime for GenericRuntime {
         prompt: &str,
         working_directory: &Path,
         run_timeout: Duration,
+        _agent_profile: Option<&AgentProfile>,
         cancellation: CancellationToken,
         resume_session: Option<&str>,
         observations: watch::Sender<RuntimeObservation>,

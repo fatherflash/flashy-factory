@@ -182,6 +182,17 @@ and ambiguous or unsafe work to `Needs Decision`. Manual tasks retain the
 Section names are not built in. If your project uses different names, update
 the configuration and workflows together.
 
+### Agent profiles
+
+Repository-owned profiles choose the Codex model, reasoning effort, and service
+tier for each trigger. The generated configuration defines `specification` and
+`implementation` profiles, so manual and autonomous triggers can deliberately
+use different settings. Every trigger must name a configured profile; invalid
+or missing references prevent the daemon from starting. Flashy Factory passes
+these values only to the worker process, and records the resolved values on the
+run for inspection. Restart the daemon after changing profiles or trigger
+references; a live daemon keeps its startup configuration.
+
 ### Repository hosting
 
 The managed repository's host determines cloning, branch inspection, pushing,

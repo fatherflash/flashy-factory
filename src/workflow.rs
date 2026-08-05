@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, fmt::Write};
 use anyhow::Result;
 use chrono_tz::Tz;
 
-use crate::config::{Config, TriggerKind};
+use crate::config::{AgentProfile, Config, TriggerKind};
 use crate::hash::sha256_hex;
 use crate::table;
 
@@ -56,6 +56,7 @@ pub struct WorkflowEntry {
     pub trigger: Option<Trigger>,
     pub runtime: Option<String>,
     pub timeout: Option<Duration>,
+    pub agent_profile: Option<(String, AgentProfile)>,
     pub prompt: Option<String>,
     pub errors: Vec<String>,
 }
@@ -234,6 +235,11 @@ fn load_trigger(
         trigger,
         runtime: Some(config.default_runtime.clone()),
         timeout: Some(configured.timeout),
+        agent_profile: config
+            .agent_profiles
+            .get(&configured.agent_profile)
+            .cloned()
+            .map(|profile| (configured.agent_profile.clone(), profile)),
         prompt: None,
         errors: Vec::new(),
     };

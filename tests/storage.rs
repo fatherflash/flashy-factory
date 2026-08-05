@@ -170,7 +170,7 @@ fn concurrent_first_open_converges_on_one_complete_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 15);
     let schedule_tables: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_schema
@@ -1244,7 +1244,7 @@ fn migrates_a_version_one_ledger_without_losing_tasks() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 15);
 }
 
 #[test]
@@ -1264,6 +1264,13 @@ fn opens_an_existing_version_eight_ledger() {
              DROP TABLE project_claims;
              DROP TABLE autonomous_pull_request_events;
              DROP TABLE autonomous_pull_requests;
+             DROP TABLE autonomous_continuations;
+             ALTER TABLE runs DROP COLUMN agent_profile;
+             ALTER TABLE runs DROP COLUMN model;
+             ALTER TABLE runs DROP COLUMN reasoning_effort;
+             ALTER TABLE runs DROP COLUMN service_tier;
+             DELETE FROM schema_migrations WHERE version = 14;
+             DELETE FROM schema_migrations WHERE version = 15;
              DELETE FROM schema_migrations WHERE version = 13;
              DELETE FROM schema_migrations WHERE version = 12;
              DELETE FROM schema_migrations WHERE version = 11;
@@ -1283,7 +1290,7 @@ fn opens_an_existing_version_eight_ledger() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 13);
+    assert_eq!(version, 15);
 }
 
 #[test]

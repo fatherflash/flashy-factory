@@ -61,6 +61,10 @@ pub struct RunView {
     pub base_sha: Option<String>,
     pub factory_branch: Option<String>,
     pub workspace_kind: Option<String>,
+    pub agent_profile: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
 }
 
 impl From<&Run> for RunView {
@@ -99,6 +103,10 @@ impl From<&Run> for RunView {
             base_sha: run.base_sha.clone(),
             factory_branch: run.factory_branch.clone(),
             workspace_kind: run.workspace_kind.clone(),
+            agent_profile: run.agent_profile.clone(),
+            model: run.model.clone(),
+            reasoning_effort: run.reasoning_effort.clone(),
+            service_tier: run.service_tier.clone(),
         }
     }
 }
@@ -346,6 +354,22 @@ pub fn print_inspection(inspection: &RunInspection) {
         safe_text(inspection.run.source_item.as_deref().unwrap_or("-"))
     );
     println!("Runtime: {}", safe_text(&inspection.run.runtime));
+    println!(
+        "Agent profile: {}",
+        safe_text(inspection.run.agent_profile.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Model: {}",
+        safe_text(inspection.run.model.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Reasoning effort: {}",
+        safe_text(inspection.run.reasoning_effort.as_deref().unwrap_or("-"))
+    );
+    println!(
+        "Service tier: {}",
+        safe_text(inspection.run.service_tier.as_deref().unwrap_or("-"))
+    );
     println!("Outcome: {}", safe_text(&inspection.run.outcome));
     println!("Started: {}", inspection.run.started_at);
     println!("Last activity: {}", inspection.run.last_activity_at);

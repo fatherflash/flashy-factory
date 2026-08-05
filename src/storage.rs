@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use crate::repository::{RepositoryProvider, recognize_change_request_url};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -625,6 +625,10 @@ pub struct Run {
     pub base_sha: Option<String>,
     pub factory_branch: Option<String>,
     pub workspace_kind: Option<String>,
+    pub agent_profile: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2662,6 +2666,30 @@ impl Ledger {
         Ok(run)
     }
 
+    pub fn set_run_agent_profile(
+        &mut self,
+        run_id: i64,
+        profile: &str,
+        model: &str,
+        reasoning_effort: &str,
+        service_tier: &str,
+    ) -> Result<()> {
+        if [profile, model, reasoning_effort, service_tier]
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            bail!("resolved agent profile fields must not be empty");
+        }
+        let changed = self.connection.execute(
+            "UPDATE runs SET agent_profile = ?2, model = ?3, reasoning_effort = ?4, service_tier = ?5 WHERE id = ?1 AND outcome = 'running'",
+            params![run_id, profile, model, reasoning_effort, service_tier],
+        ).context("failed to persist resolved agent profile")?;
+        if changed != 1 {
+            bail!("running run {run_id} disappeared before its agent profile could be persisted");
+        }
+        Ok(())
+    }
+
     pub fn finish_run_and_task(
         &mut self,
         id: i64,
@@ -3443,6 +3471,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 14 {
             migrate_v14(connection)?;
         }
+        if version < 15 {
+            migrate_v15(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -3454,6 +3485,19 @@ fn migrate(connection: &Connection) -> Result<()> {
             Err(error)
         }
     }
+}
+
+fn migrate_v15(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "ALTER TABLE runs ADD COLUMN agent_profile TEXT;
+         ALTER TABLE runs ADD COLUMN model TEXT;
+         ALTER TABLE runs ADD COLUMN reasoning_effort TEXT;
+         ALTER TABLE runs ADD COLUMN service_tier TEXT;
+         INSERT INTO schema_migrations(version, applied_at) VALUES (15, unixepoch('subsec') * 1000);
+         PRAGMA user_version = 15;",
+        )
+        .context("failed to migrate SQLite ledger to version 15")
 }
 
 fn migrate_v1(connection: &Connection) -> Result<()> {
@@ -4014,6 +4058,10 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         base_sha: row.get("base_sha")?,
         factory_branch: row.get("factory_branch")?,
         workspace_kind: row.get("workspace_kind")?,
+        agent_profile: row.get("agent_profile")?,
+        model: row.get("model")?,
+        reasoning_effort: row.get("reasoning_effort")?,
+        service_tier: row.get("service_tier")?,
     })
 }
 

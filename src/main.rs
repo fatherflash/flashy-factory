@@ -1963,6 +1963,7 @@ async fn run_workflow(
             &workflow.prompt,
             &workflow.working_directory,
             workflow.timeout,
+            None,
             cancellation,
             None,
             observations,
