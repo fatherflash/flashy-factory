@@ -13,7 +13,23 @@ linked or related GitHub pull requests and CI state with authenticated `gh` and
 `git`.
 
 Confirm the task belongs to `ASANA_PROJECT_GID` and is still in
-`Ready To Implement`, then claim it with:
+`Ready To Implement`, then re-read its authorization tag. `factory:manual`
+retains the established human-approved implementation path: claim it without
+autonomous dependency routing.
+
+For `factory:auto-to-pr`, immediately revalidate live native dependencies:
+
+```sh
+.flashy-factory/clients/asana dependency-state <task-gid>
+```
+
+Compare the returned GIDs and `dependency_revision` with the durable source
+context. If they differ, or any dependency is incomplete, do not claim the
+task. Comment with the observed state and move it to `Approved - Waiting On
+Dependencies`; malformed, inaccessible, cross-project, cyclic, or unresolved
+dependency state must instead move to `Needs Decision`.
+
+Only when the applicable validation succeeds, claim it with:
 
 ```sh
 .flashy-factory/clients/asana move <task-gid> --section "Implementing"

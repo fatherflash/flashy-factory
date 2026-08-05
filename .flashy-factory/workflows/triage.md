@@ -46,14 +46,30 @@ Classify actionable work with exactly one of `bug`, `enhancement`, or
 `documentation`, and one of `P0`, `P1`, `P2`, or `P3`, using the client's
 `add-tag` and `remove-tag` commands. Do not create missing tags.
 
-## Route for a human decision
+## Route the completed specification
 
 Add one concise comment with the resulting scope, evidence, risks, and next
-human action. Then move a complete specification to `Awaiting Approval`. A
-human reviews it and moves it to `Ready To Implement`; never make that approval
-move yourself.
+action. Re-read the task's tags before routing it. A task with both
+`factory:auto-to-pr` and `factory:manual`, neither authorization tag, or an
+unreadable native dependency graph is unsafe: explain the evidence and move it
+to `Needs Decision`.
 
-If information is missing, comment with the smallest focused questions and
-leave the task in `Creating Spec`. If it is duplicate, unsafe, already
-implemented, or inconsistent with the repository, explain the evidence and
-recommended next action without forcing it forward.
+For `factory:manual`, move a complete specification to `Awaiting Approval`.
+That existing human approval boundary remains unchanged.
+
+For `factory:auto-to-pr`, read live native dependencies immediately before the
+move:
+
+```sh
+.flashy-factory/clients/asana dependency-state <task-gid>
+```
+
+Record the returned dependency GIDs and `dependency_revision` in the Asana
+comment. If every dependency is complete, move the task to `Ready To Implement`.
+If any dependency is incomplete, move it to `Approved - Waiting On
+Dependencies`. Do not use an Epic or custom field as a substitute for this
+section-based state.
+
+If information is missing, contradictory, duplicate, unsafe, already
+implemented, or otherwise ambiguous, comment with the smallest focused
+questions and move the task to `Needs Decision`.

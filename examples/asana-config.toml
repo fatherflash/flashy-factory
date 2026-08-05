@@ -14,10 +14,25 @@ command = [".flashy-factory/sources/asana", "--max-results", "200"]
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/triage.md"
+
+[trigger.triage-manual]
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/implement.md"
+timeout = "4h"
+
+[trigger.implement-manual]
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"

@@ -623,14 +623,33 @@ fn default_config(
     document["trigger"]["triage"] = Item::Table(Table::new());
     document["trigger"]["triage"]["type"] = value("source");
     document["trigger"]["triage"]["state"] = value("Ready For Spec");
+    document["trigger"]["triage"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:auto-to-pr"]));
     document["trigger"]["triage"]["workflow"] =
+        value(format!("{config_directory}/workflows/triage.md"));
+    document["trigger"]["triage-manual"] = Item::Table(Table::new());
+    document["trigger"]["triage-manual"]["type"] = value("source");
+    document["trigger"]["triage-manual"]["state"] = value("Ready For Spec");
+    document["trigger"]["triage-manual"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:manual"]));
+    document["trigger"]["triage-manual"]["workflow"] =
         value(format!("{config_directory}/workflows/triage.md"));
     document["trigger"]["implement"] = Item::Table(Table::new());
     document["trigger"]["implement"]["type"] = value("source");
     document["trigger"]["implement"]["state"] = value("Ready To Implement");
+    document["trigger"]["implement"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:auto-to-pr"]));
     document["trigger"]["implement"]["workflow"] =
         value(format!("{config_directory}/workflows/implement.md"));
     document["trigger"]["implement"]["timeout"] = value("4h");
+    document["trigger"]["implement-manual"] = Item::Table(Table::new());
+    document["trigger"]["implement-manual"]["type"] = value("source");
+    document["trigger"]["implement-manual"]["state"] = value("Ready To Implement");
+    document["trigger"]["implement-manual"]["labels"] =
+        toml_edit::value(toml_edit::Array::from_iter(["factory:manual"]));
+    document["trigger"]["implement-manual"]["workflow"] =
+        value(format!("{config_directory}/workflows/implement.md"));
+    document["trigger"]["implement-manual"]["timeout"] = value("4h");
     document["trigger"]["bug-finder"] = Item::Table(Table::new());
     document["trigger"]["bug-finder"]["type"] = value("schedule");
     document["trigger"]["bug-finder"]["schedule"] = value("0 9 * * 1");

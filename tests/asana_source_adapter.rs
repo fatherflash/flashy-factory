@@ -316,11 +316,115 @@ fn asana_adapter_discovers_exact_section_and_tag_matches() {
     );
     assert!(!requests[1].head.contains("project="));
     assert!(!requests[1].head.contains("section="));
+    assert_eq!(
+        requests.len(),
+        2,
+        "manual/non-autonomous polling does not read dependencies"
+    );
     assert!(requests.iter().all(|request| {
         request
             .head
             .contains("Authorization: Bearer test-secret-token")
     }));
+}
+
+#[test]
+fn dependency_state_routes_unblocked_and_blocked_tasks_and_revalidates_changes() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-free","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"task-blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-blocker","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"task-blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-blocker","completed":true,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+    ]);
+    let free = run_client(&api_base, &["dependency-state", "task-free"]);
+    let blocked = run_client(&api_base, &["dependency-state", "task-waiting"]);
+    let released = run_client(&api_base, &["dependency-state", "task-waiting"]);
+    for output in [&free, &blocked, &released] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let free: serde_json::Value = serde_json::from_slice(&free.stdout).unwrap();
+    let blocked: serde_json::Value = serde_json::from_slice(&blocked.stdout).unwrap();
+    let released: serde_json::Value = serde_json::from_slice(&released.stdout).unwrap();
+    assert_eq!(free["dependencies"], serde_json::json!([]));
+    assert_eq!(blocked["dependencies"], serde_json::json!(["task-blocker"]));
+    assert_eq!(blocked["blocked"], true);
+    assert_eq!(released["blocked"], false);
+    assert_ne!(
+        blocked["dependency_revision"],
+        released["dependency_revision"]
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn dependency_state_fails_closed_for_malformed_cyclic_and_cross_project_graphs() {
+    let cases = [
+        r#"{"data":{"gid":"task-42","completed":false,"dependencies":"invalid","memberships":[{"project":{"gid":"project-1"}}]}}"#,
+        r#"{"data":{"gid":"task-42","completed":false,"dependencies":[{"gid":"task-other"}],"memberships":[{"project":{"gid":"project-1"}},{"project":{"gid":"other-project"}}]}}"#,
+    ];
+    for body in cases {
+        let (api_base, server) = serve(vec![Response {
+            status: "200 OK",
+            body,
+            headers: &[],
+        }]);
+        let output = run_client(&api_base, &["dependency-state", "task-42"]);
+        assert!(!output.status.success());
+        server.join().unwrap();
+    }
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-42","completed":false,"dependencies":[{"gid":"task-43"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-43","completed":false,"dependencies":[{"gid":"task-42"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+    ]);
+    let output = run_client(&api_base, &["dependency-state", "task-42"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cycle"));
+    server.join().unwrap();
+}
+
+#[test]
+fn autonomous_workflows_route_decisions_and_preserve_manual_approval() {
+    let triage = include_str!("../.flashy-factory/workflows/triage.md");
+    let implement = include_str!("../.flashy-factory/workflows/implement.md");
+    assert!(triage.contains("Approved - Waiting On\nDependencies"));
+    assert!(triage.contains("Needs Decision"));
+    assert!(triage.contains("factory:manual"));
+    assert!(triage.contains("Awaiting Approval"));
+    assert!(implement.contains("dependency-state"));
+    assert!(implement.contains("Needs Decision"));
 }
 
 #[test]

@@ -169,8 +169,14 @@ similar to:
 
 ```text
 Ready For Spec → Creating Spec → Awaiting Approval
-                                  ↓ human approval
+                                  ↓ manual approval
 Ready To Implement → Implementing → Reviewing → Done
+
+Autonomous tasks carry `factory:auto-to-pr`. After specification, Flashy
+Factory moves an unblocked task to `Ready To Implement`, a task with an
+incomplete native Asana dependency to `Approved - Waiting On Dependencies`,
+and ambiguous or unsafe work to `Needs Decision`. Manual tasks retain the
+`Awaiting Approval` boundary.
 ```
 
 Section names are not built in. If your project uses different names, update

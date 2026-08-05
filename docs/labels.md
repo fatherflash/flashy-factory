@@ -11,8 +11,12 @@ project:
 
 ```text
 Ready For Spec → Creating Spec → Awaiting Approval
-                                  ↓ human approval
+                                  ↓ manual approval
 Ready To Implement → Implementing → Reviewing → Done
+         ↑
+Approved - Waiting On Dependencies
+
+Needs Decision
 ```
 
 `Ready For Spec` and `Ready To Implement` are the only polled sections in the
@@ -20,11 +24,16 @@ checked-in configuration. Moving a task into one of them is an explicit request
 for an agent pass. Only trusted project members should have permission to make
 those moves.
 
-The triage workflow moves a claimed task to `Creating Spec`, then routes a
-complete specification to `Awaiting Approval`. A human reviews the result and
-moves it to `Ready To Implement`. The implementation workflow claims it by
-moving it to `Implementing`, then moves a green pull-request handoff to
-`Reviewing`. Humans remain responsible for merge and `Done`.
+The triage workflow moves a claimed task to `Creating Spec`. For
+`factory:manual`, a complete specification goes to `Awaiting Approval`, and a
+human moves it to `Ready To Implement`. For `factory:auto-to-pr`, Flashy
+Factory reads native Asana dependencies: unblocked work goes to `Ready To
+Implement`, incomplete blockers go to `Approved - Waiting On Dependencies`,
+and ambiguous or unsafe work goes to `Needs Decision`. Sections—not an Epic
+custom field—remain the visual source of truth. The implementation workflow
+claims eligible work by moving it to `Implementing`, then moves a green
+pull-request handoff to `Reviewing`. Humans remain responsible for merge and
+`Done`.
 
 ## Type tags
 
