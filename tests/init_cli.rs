@@ -112,6 +112,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         .stdout(predicate::str::contains("workflow directory"))
         .stdout(predicate::str::contains("workflows/triage.md"))
         .stdout(predicate::str::contains("workflows/implement.md"))
+        .stdout(predicate::str::contains(
+            "workflows/reconcile-dependencies.md",
+        ))
         .stdout(predicate::str::contains("workflows/bug-finder.md"))
         .stdout(predicate::str::contains("Dockerfile").not())
         .stdout(predicate::str::contains("GitHub label").not())
@@ -136,6 +139,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("max_concurrent = 1"));
     assert!(config.contains("[trigger.triage]"));
     assert!(config.contains("[trigger.implement]"));
+    assert!(config.contains("[trigger.reconcile-dependencies]"));
     assert!(config.contains("[trigger.triage-manual]"));
     assert!(config.contains("[trigger.implement-manual]"));
     assert!(config.contains("factory:auto-to-pr"));
@@ -143,6 +147,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("[trigger.bug-finder]"));
     assert!(config.contains("workflow = \".flashy-factory/workflows/triage.md\""));
     assert!(config.contains("workflow = \".flashy-factory/workflows/implement.md\""));
+    assert!(config.contains("workflow = \".flashy-factory/workflows/reconcile-dependencies.md\""));
     assert!(config.contains("workflow = \".flashy-factory/workflows/bug-finder.md\""));
     assert!(config.contains("schedule = \"0 9 * * 1\""));
     assert!(!config.contains("[source.states]"));
@@ -152,7 +157,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(fixture.workspace().is_dir());
     assert!(fixture.workflows().is_dir());
     assert!(!fixture.repository.join(".factory").exists());
-    assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 3);
+    assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 4);
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("triage.md")).unwrap(),
         include_str!("../.flashy-factory/workflows/triage.md")
@@ -160,6 +165,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("implement.md")).unwrap(),
         include_str!("../.flashy-factory/workflows/implement.md")
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.workflows().join("reconcile-dependencies.md")).unwrap(),
+        include_str!("../.flashy-factory/workflows/reconcile-dependencies.md")
     );
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("bug-finder.md")).unwrap(),
@@ -578,6 +587,12 @@ fn init_does_not_touch_existing_workflows() {
     assert_eq!(fs::read_to_string(workflow).unwrap(), "custom policy\n");
     assert!(fixture.workflows().join("triage.md").is_file());
     assert!(fixture.workflows().join("implement.md").is_file());
+    assert!(
+        fixture
+            .workflows()
+            .join("reconcile-dependencies.md")
+            .is_file()
+    );
     assert!(fixture.workflows().join("bug-finder.md").is_file());
 }
 
@@ -587,10 +602,12 @@ fn init_preserves_existing_default_assets_byte_for_byte() {
     fs::create_dir_all(fixture.workflows()).unwrap();
     let triage = fixture.workflows().join("triage.md");
     let implement = fixture.workflows().join("implement.md");
+    let reconcile = fixture.workflows().join("reconcile-dependencies.md");
     let bug_finder = fixture.workflows().join("bug-finder.md");
     let dockerfile = fixture.repository.join(".flashy-factory/Dockerfile");
     fs::write(&triage, "custom triage\n").unwrap();
     fs::write(&implement, "custom implementation\n").unwrap();
+    fs::write(&reconcile, "custom dependency reconciliation\n").unwrap();
     fs::write(&bug_finder, "custom bug finder\n").unwrap();
     fs::write(&dockerfile, "FROM custom-image\n").unwrap();
 
@@ -600,6 +617,10 @@ fn init_preserves_existing_default_assets_byte_for_byte() {
     assert_eq!(
         fs::read_to_string(implement).unwrap(),
         "custom implementation\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reconcile).unwrap(),
+        "custom dependency reconciliation\n"
     );
     assert_eq!(
         fs::read_to_string(bug_finder).unwrap(),
@@ -631,6 +652,12 @@ fn init_rejects_symlinked_default_asset_without_touching_target() {
     assert_eq!(fs::read_to_string(outside).unwrap(), "outside policy\n");
     assert!(!fixture.config_path().exists());
     assert!(!fixture.workflows().join("implement.md").exists());
+    assert!(
+        !fixture
+            .workflows()
+            .join("reconcile-dependencies.md")
+            .exists()
+    );
     assert!(!fixture.workflows().join("bug-finder.md").exists());
     assert!(
         !fixture

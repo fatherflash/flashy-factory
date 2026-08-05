@@ -476,6 +476,7 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
         maximum=args.max_results,
     )
     issues = []
+    waiting_reconciliation = state == "Approved - Waiting On Dependencies"
     for task in tasks:
         if task.get("completed") is True:
             continue
@@ -486,6 +487,13 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
             if isinstance(tag, dict) and isinstance(tag.get("name"), str)
         ]
         if not all(label in tag_names for label in labels):
+            continue
+        if (
+            waiting_reconciliation
+            and AUTHORIZATION_TAGS["backlog_only"] in tag_names
+        ):
+            # A contradictory authorization tag is unsafe, but it must not turn
+            # manual work into an autonomous dependency read or reconciliation.
             continue
         gid = require_gid("task.gid", task.get("gid"))
         title = task.get("name")
@@ -507,11 +515,31 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
             "author": str(author),
         }
         if AUTHORIZATION_TAGS["autonomous_to_pr"] in tag_names:
-            dependency = dependency_state(client, gid, project_gid)
-            issue["revision"] = (
-                f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}:"
-                f"{dependency['dependency_revision']}"
-            )
+            try:
+                dependency = dependency_state(client, gid, project_gid)
+            except ClientError as error:
+                # Waiting autonomous work needs one durable reconciliation pass even
+                # when the graph cannot be read.  The reconciliation workflow will
+                # fail closed into Needs Decision; an unchanged unsafe observation
+                # must not continuously enqueue it.
+                if error.rate_limited or not waiting_reconciliation:
+                    raise
+                unsafe_revision = hashlib.sha256(
+                    f"{section_gid}:{','.join(tag_gids)}:unsafe".encode("utf-8")
+                ).hexdigest()
+                issue["revision"] = f"asana:{section_gid}:{','.join(tag_gids)}:unsafe:{unsafe_revision}"
+                issues.append(issue)
+                continue
+            if waiting_reconciliation:
+                issue["revision"] = (
+                    f"asana:{section_gid}:{','.join(tag_gids)}:"
+                    f"{dependency['dependency_revision']}"
+                )
+            else:
+                issue["revision"] = (
+                    f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}:"
+                    f"{dependency['dependency_revision']}"
+                )
             issue["dependencies"] = dependency["dependencies"]
             issue["dependency_revision"] = dependency["dependency_revision"]
         else:

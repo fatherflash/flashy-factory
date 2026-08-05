@@ -31,8 +31,9 @@ Needs Decision
 
 You can choose different names, but update `.flashy-factory/config.toml` and the
 workflow prompts together. Only trusted project members should be able to move
-tasks into `Ready For Spec` or `Ready To Implement`; those moves authorize an
-agent run.
+tasks into `Ready For Spec` or `Ready To Implement`; those moves authorize a
+normal agent run. `Approved - Waiting On Dependencies` is additionally polled
+only for autonomous dependency reconciliation.
 
 Find the project and workspace GIDs in Asana's URLs or through the API. GIDs are
 identifiers, not secrets, but environment variables keep machine-specific
@@ -94,6 +95,12 @@ labels = ["factory:auto-to-pr"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 
+[trigger.reconcile-dependencies]
+type = "source"
+state = "Approved - Waiting On Dependencies"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/reconcile-dependencies.md"
+
 [trigger.implement-manual]
 type = "source"
 state = "Ready To Implement"
@@ -113,6 +120,15 @@ Asana tag name; all configured tags must be present. The adapter:
 
 Flashy Factory reruns the same query immediately before execution. A task moved
 out of the triggering section will not start.
+
+`Approved - Waiting On Dependencies` has its own autonomous-only source
+trigger. Each poll re-reads the live native graph. The stable observation
+revision includes the direct dependency GIDs and completion states, so a graph
+or completion change creates one new reconciliation pass without restarting the
+daemon; an unchanged waiting observation does not repeatedly enqueue work. The
+reconciliation workflow moves only a fully unblocked autonomous task to `Ready
+To Implement`, leaves a blocked task waiting, and sends an unsafe graph to
+`Needs Decision`. `factory:manual` tasks are excluded from this path.
 
 For autonomous tasks, the source query additionally fetches the native Asana
 dependency graph. It persists the direct dependency GIDs and a stable revision

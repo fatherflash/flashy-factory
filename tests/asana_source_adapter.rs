@@ -328,6 +328,244 @@ fn asana_adapter_discovers_exact_section_and_tag_matches() {
     }));
 }
 
+fn run_waiting_adapter(api_base: &str) -> Output {
+    let mut command = Command::new(adapter());
+    command.args([
+        "--state",
+        "Approved - Waiting On Dependencies",
+        "--label",
+        "factory:auto-to-pr",
+    ]);
+    configured(&mut command, api_base);
+    command.output().unwrap()
+}
+
+#[test]
+fn waiting_autonomous_observations_reconcile_completion_changes_without_repeating_unchanged_work() {
+    let waiting_task = r#"{"data":[{"gid":"task-waiting","name":"Wait","notes":"Spec","completed":false,"modified_at":"2026-08-05T12:00:00.000Z","tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"}]}],"next_page":null}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: waiting_task,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"blocker","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: waiting_task,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"blocker","completed":true,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+    ]);
+    let blocked = run_waiting_adapter(&api_base);
+    let released = run_waiting_adapter(&api_base);
+    assert!(blocked.status.success());
+    assert!(released.status.success());
+    let blocked: serde_json::Value = serde_json::from_slice(&blocked.stdout).unwrap();
+    let released: serde_json::Value = serde_json::from_slice(&released.stdout).unwrap();
+    assert_eq!(
+        blocked["issues"][0]["dependencies"],
+        serde_json::json!(["blocker"])
+    );
+    assert_ne!(
+        blocked["issues"][0]["revision"],
+        released["issues"][0]["revision"]
+    );
+    assert_ne!(
+        blocked["issues"][0]["dependency_revision"],
+        released["issues"][0]["dependency_revision"]
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn waiting_reconciliation_revision_ignores_comment_only_modified_at_changes() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-waiting","name":"Wait","completed":false,"modified_at":"2026-08-05T12:00:00.000Z","tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"}]}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"blocker","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-waiting","name":"Wait","completed":false,"modified_at":"2026-08-05T12:01:00.000Z","tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"}]}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-waiting","completed":false,"dependencies":[{"gid":"blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"blocker","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+    ]);
+    let first = run_waiting_adapter(&api_base);
+    let second = run_waiting_adapter(&api_base);
+    assert!(first.status.success());
+    assert!(second.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(
+        first["issues"][0]["revision"],
+        second["issues"][0]["revision"]
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn waiting_reconciliation_keeps_manual_and_unsafe_graphs_out_of_the_implementation_lane() {
+    let manual = r#"{"data":[{"gid":"manual","name":"Manual","completed":false,"tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"},{"gid":"tag-manual","name":"factory:manual"}]}],"next_page":null}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: manual,
+            headers: &[],
+        },
+    ]);
+    let output = run_waiting_adapter(&api_base);
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["issues"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        server.join().unwrap().len(),
+        2,
+        "manual work is never revalidated"
+    );
+
+    for unsafe_root in [
+        r#"{"data":{"gid":"task-unsafe","completed":false,"dependencies":"malformed","memberships":[{"project":{"gid":"project-1"}}]}}"#,
+        r#"{"data":{"gid":"task-unsafe","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}},{"project":{"gid":"other-project"}}]}}"#,
+        r#"{"errors":[{"message":"not found"}]}"#,
+    ] {
+        let (api_base, server) = serve(vec![
+            Response {
+                status: "200 OK",
+                body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+                headers: &[],
+            },
+            Response {
+                status: "200 OK",
+                body: r#"{"data":[{"gid":"task-unsafe","name":"Unsafe","completed":false,"modified_at":"2026-08-05T12:00:00.000Z","tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"}]}],"next_page":null}"#,
+                headers: &[],
+            },
+            Response {
+                status: if unsafe_root.contains("errors") {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                },
+                body: unsafe_root,
+                headers: &[],
+            },
+        ]);
+        let output = run_waiting_adapter(&api_base);
+        assert!(output.status.success());
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["issues"].as_array().unwrap().len(), 1);
+        assert!(
+            value["issues"][0]["revision"]
+                .as_str()
+                .unwrap()
+                .contains(":unsafe:")
+        );
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn waiting_reconciliation_observes_cyclic_dependencies_as_a_decision_boundary() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-cycle","name":"Cycle","completed":false,"modified_at":"2026-08-05T12:00:00.000Z","tags":[{"gid":"tag-auto","name":"factory:auto-to-pr"}]}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-cycle","completed":false,"dependencies":[{"gid":"blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"blocker","completed":false,"dependencies":[{"gid":"task-cycle"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+    ]);
+    let output = run_waiting_adapter(&api_base);
+    assert!(output.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["issues"][0]["revision"]
+            .as_str()
+            .unwrap()
+            .contains(":unsafe:")
+    );
+    server.join().unwrap();
+}
+
 #[test]
 fn dependency_state_routes_unblocked_and_blocked_tasks_and_revalidates_changes() {
     let (api_base, server) = serve(vec![
@@ -419,12 +657,18 @@ fn dependency_state_fails_closed_for_malformed_cyclic_and_cross_project_graphs()
 fn autonomous_workflows_route_decisions_and_preserve_manual_approval() {
     let triage = include_str!("../.flashy-factory/workflows/triage.md");
     let implement = include_str!("../.flashy-factory/workflows/implement.md");
+    let reconcile = include_str!("../.flashy-factory/workflows/reconcile-dependencies.md");
     assert!(triage.contains("Approved - Waiting On\nDependencies"));
     assert!(triage.contains("Needs Decision"));
     assert!(triage.contains("factory:manual"));
     assert!(triage.contains("Awaiting Approval"));
     assert!(implement.contains("dependency-state"));
     assert!(implement.contains("Needs Decision"));
+    assert!(reconcile.contains("Approved - Waiting On Dependencies"));
+    assert!(reconcile.contains("Ready To Implement"));
+    assert!(reconcile.contains("Needs Decision"));
+    assert!(reconcile.contains("factory:manual"));
+    assert!(reconcile.contains("Epic custom"));
 }
 
 #[test]
