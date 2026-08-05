@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, pa
 use crate::repository::{RepositoryProvider, recognize_change_request_url};
 
 pub const DATABASE_NAME: &str = "factory.sqlite3";
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
 pub const MAX_ERROR_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_ID_BYTES: usize = 1024;
@@ -700,6 +700,14 @@ pub enum PullRequestEventState {
     Consumed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationRequest {
+    Queued,
+    Duplicate,
+    Unsafe,
+    LimitReached,
+}
+
 const PULL_REQUEST_CLAIM_LEASE_MILLIS: i64 = 60_000;
 
 impl PullRequestObservation {
@@ -1024,6 +1032,107 @@ impl Ledger {
         state
             .map(|state| pull_request_event_state(&state))
             .transpose()
+    }
+
+    /// Atomically reserves one bounded continuation for a trusted observation
+    /// and returns the original delivery task to the normal FIFO claim path.
+    /// The original task owns the worktree, so a continuation can never adopt
+    /// a different branch or workspace.
+    pub fn request_continuation(
+        &mut self,
+        repository: &str,
+        task_gid: &str,
+        fingerprint: &str,
+    ) -> Result<ContinuationRequest> {
+        validate_pull_request_event_key(repository, task_gid, fingerprint)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let already_reserved: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM autonomous_continuations
+               WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3)",
+            params![repository, task_gid, fingerprint],
+            |row| row.get(0),
+        )?;
+        if already_reserved {
+            transaction.commit()?;
+            return Ok(ContinuationRequest::Duplicate);
+        }
+        let task = transaction
+            .query_row(
+                "SELECT tasks.id, tasks.payload, tasks.state, task_workspaces.kind,
+                        task_workspaces.state, task_workspaces.factory_branch
+                 FROM tasks JOIN task_workspaces ON task_workspaces.task_id = tasks.id
+                 WHERE tasks.repository = ?1 AND tasks.workflow = 'implement'
+                   AND tasks.source_item = ?2
+                 ORDER BY tasks.id DESC LIMIT 2",
+                params![repository, task_gid],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((task_id, payload, state, kind, workspace_state, branch)) = task else {
+            transaction.commit()?;
+            return Ok(ContinuationRequest::Unsafe);
+        };
+        let autonomous = payload
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .and_then(|value| {
+                value
+                    .get("labels")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+            })
+            .is_some_and(|labels| {
+                labels
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|name| name == "factory:auto-to-pr")
+                    && !labels
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(|name| name == "factory:manual")
+            });
+        if !autonomous
+            || state != "succeeded"
+            || kind != "delivery"
+            || workspace_state == "cleaned"
+            || branch.is_none()
+        {
+            transaction.commit()?;
+            return Ok(ContinuationRequest::Unsafe);
+        }
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO autonomous_continuations (repository, task_gid, fingerprint, task_id, requested_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![repository, task_gid, fingerprint, task_id, now_millis()?],
+        )?;
+        if inserted == 0 {
+            transaction.commit()?;
+            return Ok(ContinuationRequest::Duplicate);
+        }
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM autonomous_continuations WHERE repository = ?1 AND task_gid = ?2",
+            params![repository, task_gid],
+            |row| row.get(0),
+        )?;
+        if count > 3 {
+            transaction.execute("DELETE FROM autonomous_continuations WHERE repository = ?1 AND task_gid = ?2 AND fingerprint = ?3", params![repository, task_gid, fingerprint])?;
+            transaction.commit()?;
+            return Ok(ContinuationRequest::LimitReached);
+        }
+        transaction.execute("UPDATE tasks SET state = 'queued', updated_at = ?1 WHERE id = ?2 AND state = 'succeeded'", params![now_millis()?, task_id])?;
+        transaction.commit()?;
+        Ok(ContinuationRequest::Queued)
     }
     pub fn project_claim_matches(
         &self,
@@ -3331,6 +3440,9 @@ fn migrate(connection: &Connection) -> Result<()> {
         if version < 13 {
             migrate_v13(connection)?;
         }
+        if version < 14 {
+            migrate_v14(connection)?;
+        }
         Ok(())
     })();
     match result {
@@ -3712,6 +3824,26 @@ fn migrate_v13(connection: &Connection) -> Result<()> {
         )
         .context("failed to migrate SQLite ledger to version 13")?;
     Ok(())
+}
+
+fn migrate_v14(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE autonomous_continuations (
+             repository TEXT NOT NULL,
+             task_gid TEXT NOT NULL,
+             fingerprint TEXT NOT NULL,
+             task_id INTEGER NOT NULL REFERENCES tasks(id),
+             requested_at INTEGER NOT NULL,
+             PRIMARY KEY(repository, task_gid, fingerprint)
+         );
+         CREATE INDEX autonomous_continuations_task_idx
+             ON autonomous_continuations(repository, task_gid, requested_at);
+         INSERT INTO schema_migrations(version, applied_at)
+             VALUES (14, unixepoch('subsec') * 1000);
+         PRAGMA user_version = 14;",
+        )
+        .context("failed to migrate continuation ledger state")
 }
 
 fn pull_request_event_state(value: &str) -> Result<PullRequestEventState> {

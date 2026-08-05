@@ -35,9 +35,9 @@ use crate::source::{
     PollReport, RepositoryPoll, SourceClient, SourceTicketContext, source_rate_limit,
 };
 use crate::storage::{
-    AUTOMATIC_DELIVERY_CLEANUP, Ledger, OPERATOR_CONFIRMED_CLEANUP, PullRequestEventState,
-    PullRequestObservation, Run, RunOutcome, RunSandbox, Task, TaskIdentity, TaskState,
-    TaskWorkspace,
+    AUTOMATIC_DELIVERY_CLEANUP, ContinuationRequest, Ledger, OPERATOR_CONFIRMED_CLEANUP,
+    PullRequestEventState, PullRequestObservation, Run, RunOutcome, RunSandbox, Task, TaskIdentity,
+    TaskState, TaskWorkspace,
 };
 use crate::workflow::{Trigger, WorkflowCatalog, WorkflowEntry, scheduled_workflow_fingerprint};
 use crate::workspace::{DeliveryReuse, WorkspaceManager};
@@ -2922,7 +2922,9 @@ fn finalize_task_workspace(
             None => false,
         }
     };
-    if task.state == TaskState::Succeeded && !preview.dirty && published {
+    let awaits_continuation =
+        task.workflow == "implement" && ledger.latest_pull_request_for_task(task.id)?.is_some();
+    if task.state == TaskState::Succeeded && !preview.dirty && published && !awaits_continuation {
         ledger.update_task_workspace_state(
             task_id,
             "cleanup_pending",
@@ -2940,8 +2942,8 @@ fn finalize_task_workspace(
         )?;
     } else {
         let summary = format!(
-            "retained ticket workspace: task={:?} dirty={} changed={} published={}",
-            task.state, preview.dirty, changed, published
+            "retained ticket workspace: task={:?} dirty={} changed={} published={} awaits_continuation={}",
+            task.state, preview.dirty, changed, published, awaits_continuation
         );
         ledger.update_task_workspace_state(task_id, "retained", Some(&summary))?;
     }
@@ -3950,6 +3952,7 @@ struct ChangeRequestObservation {
     head_sha: String,
     #[serde(default)]
     reviews: Vec<serde_json::Value>,
+    continuation_required: bool,
 }
 
 async fn reconcile_pull_request_observations(
@@ -3999,6 +4002,7 @@ async fn reconcile_pull_request_observations_with_commands(
                     &target.path,
                     "unsafe",
                     &sha256_hex(format!("cross-repository:{}", association.pull_request)),
+                    false,
                 )
                 .await?;
                 continue;
@@ -4019,6 +4023,7 @@ async fn reconcile_pull_request_observations_with_commands(
                         &target.path,
                         "unsafe",
                         &sha256_hex(format!("inaccessible:{}", association.pull_request)),
+                        false,
                     )
                     .await?;
                     continue;
@@ -4035,6 +4040,7 @@ async fn reconcile_pull_request_observations_with_commands(
                         &target.path,
                         "unsafe",
                         &sha256_hex(format!("gh-error:{}", association.pull_request)),
+                        false,
                     )
                     .await?;
                     continue;
@@ -4050,13 +4056,23 @@ async fn reconcile_pull_request_observations_with_commands(
                         head_ref_oid: String,
                         #[serde(default)]
                         reviews: Vec<serde_json::Value>,
+                        #[serde(default)]
+                        status_check_rollup: Option<serde_json::Value>,
                     }
                     serde_json::from_slice::<GitHubObservation>(&output.stdout).map(|value| {
+                        let continuation_required =
+                            failed_pipeline(value.status_check_rollup.as_ref())
+                                || changes_requested(&value.reviews);
+                        let mut reviews = value.reviews;
+                        if let Some(pipeline) = value.status_check_rollup {
+                            reviews.push(pipeline);
+                        }
                         ChangeRequestObservation {
                             state: value.state,
                             merged_at: value.merged_at,
                             head_sha: value.head_ref_oid,
-                            reviews: value.reviews,
+                            reviews,
+                            continuation_required,
                         }
                     })
                 }
@@ -4068,13 +4084,29 @@ async fn reconcile_pull_request_observations_with_commands(
                         sha: String,
                         #[serde(default)]
                         approved_by: Vec<serde_json::Value>,
+                        #[serde(default)]
+                        head_pipeline: Option<serde_json::Value>,
+                        #[serde(default)]
+                        blocking_discussions_resolved: Option<bool>,
                     }
                     serde_json::from_slice::<GitLabObservation>(&output.stdout).map(|value| {
+                        let continuation_required = failed_pipeline(value.head_pipeline.as_ref())
+                            || matches!(value.blocking_discussions_resolved, Some(false));
+                        let mut reviews = value.approved_by;
+                        if let Some(pipeline) = value.head_pipeline {
+                            reviews.push(pipeline);
+                        }
+                        if let Some(resolved) = value.blocking_discussions_resolved {
+                            reviews.push(serde_json::json!({
+                                "blocking_discussions_resolved": resolved,
+                            }));
+                        }
                         ChangeRequestObservation {
                             state: value.state,
                             merged_at: value.merged_at,
                             head_sha: value.sha,
-                            reviews: value.approved_by,
+                            reviews,
+                            continuation_required,
                         }
                     })
                 }
@@ -4093,6 +4125,7 @@ async fn reconcile_pull_request_observations_with_commands(
                         &target.path,
                         "unsafe",
                         &sha256_hex(format!("malformed:{}", association.pull_request)),
+                        false,
                     )
                     .await?;
                     continue;
@@ -4128,6 +4161,7 @@ async fn reconcile_pull_request_observations_with_commands(
                     &target.path,
                     "unsafe",
                     &sha256_hex(format!("contradictory:{}", association.pull_request)),
+                    false,
                 )
                 .await?;
                 continue;
@@ -4148,6 +4182,7 @@ async fn reconcile_pull_request_observations_with_commands(
                     &target.path,
                     "unsafe",
                     &sha256_hex(format!("invalid-head:{}", association.pull_request)),
+                    false,
                 )
                 .await?;
                 continue;
@@ -4159,6 +4194,7 @@ async fn reconcile_pull_request_observations_with_commands(
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .context("failed to serialize review observation")?;
             reviews.sort();
+            let continuation_required = observation.continuation_required;
             let observation = PullRequestObservation {
                 state: state.to_owned(),
                 head_sha: observation.head_sha,
@@ -4172,6 +4208,7 @@ async fn reconcile_pull_request_observations_with_commands(
                 &target.path,
                 state,
                 &fingerprint,
+                continuation_required,
             )
             .await?;
         }
@@ -4195,7 +4232,7 @@ async fn observe_change_request(
                     "--repo",
                     &target.identity,
                     "--json",
-                    "state,mergedAt,headRefOid,reviews",
+                    "state,mergedAt,headRefOid,reviews,statusCheckRollup",
                 ])
                 .current_dir(&target.path)
                 .output()
@@ -4218,6 +4255,101 @@ async fn observe_change_request(
     }
 }
 
+fn failed_pipeline(pipeline: Option<&serde_json::Value>) -> bool {
+    pipeline.is_some_and(|pipeline| {
+        pipeline
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("failure")
+            || pipeline.to_string().to_ascii_lowercase().contains("failed")
+            || pipeline
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("timed_out")
+            || pipeline
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("cancelled")
+            || pipeline
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("action_required")
+    })
+}
+
+fn changes_requested(reviews: &[serde_json::Value]) -> bool {
+    reviews.iter().any(|review| {
+        review
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|state| state.eq_ignore_ascii_case("changes_requested"))
+    })
+}
+
+enum ContinuationAuthorization {
+    Autonomous,
+    Manual,
+    Unsafe,
+}
+
+async fn continuation_authorization(
+    repository_path: &Path,
+    task_gid: &str,
+) -> ContinuationAuthorization {
+    let output = Command::new(repository_path.join(".flashy-factory/clients/asana"))
+        .args(["get", task_gid])
+        .current_dir(repository_path)
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return ContinuationAuthorization::Unsafe;
+    };
+    if !output.status.success() {
+        return ContinuationAuthorization::Unsafe;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return ContinuationAuthorization::Unsafe;
+    };
+    let Some(task) = value.get("data") else {
+        return ContinuationAuthorization::Unsafe;
+    };
+    let labels = task
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|tag| tag.get("name").and_then(serde_json::Value::as_str))
+                .collect::<std::collections::HashSet<_>>()
+        });
+    let Some(labels) = labels else {
+        return ContinuationAuthorization::Unsafe;
+    };
+    if labels.contains("factory:manual") && !labels.contains("factory:auto-to-pr") {
+        return ContinuationAuthorization::Manual;
+    }
+    let reviewing = task
+        .get("memberships")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|memberships| {
+            memberships.iter().any(|membership| {
+                membership
+                    .get("section")
+                    .and_then(|section| section.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("Reviewing")
+            })
+        });
+    if labels.contains("factory:auto-to-pr")
+        && !labels.contains("factory:manual")
+        && task.get("completed").and_then(serde_json::Value::as_bool) == Some(false)
+        && reviewing
+    {
+        ContinuationAuthorization::Autonomous
+    } else {
+        ContinuationAuthorization::Unsafe
+    }
+}
+
 async fn reconcile_pull_request_event(
     ledger: &mut Ledger,
     repository: &str,
@@ -4225,6 +4357,7 @@ async fn reconcile_pull_request_event(
     repository_path: &Path,
     outcome: &str,
     fingerprint: &str,
+    continuation_required: bool,
 ) -> Result<()> {
     ledger.observe_pull_request_event(repository, task_gid, fingerprint)?;
     match ledger.claim_pull_request_event(repository, task_gid, fingerprint)? {
@@ -4235,11 +4368,71 @@ async fn reconcile_pull_request_event(
         }
         Some(PullRequestEventState::Observed | PullRequestEventState::Claimed) => {}
     }
-    if outcome == "open" {
+    if outcome == "open" && !continuation_required {
         ledger.mark_pull_request_event_asana_applied(repository, task_gid, fingerprint)?;
         ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
         return Ok(());
     }
+    if outcome == "open" {
+        match continuation_authorization(repository_path, task_gid).await {
+            ContinuationAuthorization::Manual => {
+                ledger.mark_pull_request_event_asana_applied(repository, task_gid, fingerprint)?;
+                ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
+                return Ok(());
+            }
+            ContinuationAuthorization::Unsafe => {
+                reconcile_pull_request_event_with_asana(
+                    ledger,
+                    repository,
+                    task_gid,
+                    repository_path,
+                    fingerprint,
+                    "unsafe",
+                )
+                .await?;
+                return Ok(());
+            }
+            ContinuationAuthorization::Autonomous => {}
+        }
+        match ledger.request_continuation(repository, task_gid, fingerprint)? {
+            ContinuationRequest::Queued | ContinuationRequest::Duplicate => {
+                ledger.mark_pull_request_event_asana_applied(repository, task_gid, fingerprint)?;
+                ledger.consume_pull_request_event(repository, task_gid, fingerprint)?;
+                return Ok(());
+            }
+            ContinuationRequest::Unsafe | ContinuationRequest::LimitReached => {
+                reconcile_pull_request_event_with_asana(
+                    ledger,
+                    repository,
+                    task_gid,
+                    repository_path,
+                    fingerprint,
+                    "unsafe",
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    }
+    reconcile_pull_request_event_with_asana(
+        ledger,
+        repository,
+        task_gid,
+        repository_path,
+        fingerprint,
+        outcome,
+    )
+    .await
+}
+
+async fn reconcile_pull_request_event_with_asana(
+    ledger: &mut Ledger,
+    repository: &str,
+    task_gid: &str,
+    repository_path: &Path,
+    fingerprint: &str,
+    outcome: &str,
+) -> Result<()> {
     let client = repository_path.join(".flashy-factory/clients/asana");
     let result = Command::new(client)
         .args(["reconcile-pr", task_gid, "--outcome", outcome])
@@ -4345,6 +4538,45 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn successful_delivery_for_continuation(
+        ledger: &mut Ledger,
+        repository: &str,
+        task_gid: &str,
+        root: &Path,
+    ) -> i64 {
+        let task = ledger
+            .enqueue_with_payload(
+                &TaskIdentity::ticket(repository, "implement", task_gid, "revision").unwrap(),
+                Some(r#"{"labels":["factory:auto-to-pr"]}"#),
+            )
+            .unwrap()
+            .task;
+        ledger.claim_next().unwrap().unwrap();
+        let run = ledger.start_run(task.id, "codex").unwrap();
+        ledger
+            .reserve_task_workspace(&TaskWorkspace {
+                task_id: task.id,
+                kind: "delivery".into(),
+                backend: "worktree".into(),
+                repository: repository.into(),
+                base_branch: "main".into(),
+                base_sha: "a".repeat(40),
+                factory_branch: Some("factory/42".into()),
+                path: root.join("workspace"),
+                state: "retained".into(),
+                status_summary: None,
+                created_at: 0,
+                updated_at: 0,
+                cleaned_at: None,
+            })
+            .unwrap();
+        ledger
+            .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+            .unwrap();
+        task.id
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn mocked_gh_open_observation_is_consumed_once_without_an_asana_worker() {
         let temp = tempfile::tempdir().unwrap();
@@ -4367,6 +4599,47 @@ mod tests {
             Some(PullRequestEventState::Consumed)
         );
         assert!(!calls.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn github_failed_pipeline_queues_one_continuation_on_the_existing_delivery() {
+        let temp = tempfile::tempdir().unwrap();
+        let arguments = temp.path().join("gh-arguments");
+        let gh_body = format!(
+            "printf '%s' \"$*\" > {}; printf '%s' '{{\"state\":\"OPEN\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviews\":[],\"statusCheckRollup\":{{\"conclusion\":\"FAILURE\"}}}}'",
+            arguments.display(),
+        );
+        let (mut ledger, targets, gh, calls) = mocked_reconciliation_target(
+            &temp,
+            &gh_body,
+            "if [ \"$1\" = get ]; then printf '%s' '{\"data\":{\"completed\":false,\"tags\":[{\"name\":\"factory:auto-to-pr\"}],\"memberships\":[{\"section\":{\"name\":\"Reviewing\"}}]}}'; else exit 99; fi",
+        );
+        let task_id = successful_delivery_for_continuation(
+            &mut ledger,
+            "example/repo",
+            "task-42",
+            temp.path(),
+        );
+
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ledger.task(task_id).unwrap().unwrap().state,
+            TaskState::Queued
+        );
+        let arguments = std::fs::read_to_string(arguments).unwrap();
+        assert!(arguments.contains("statusCheckRollup"));
+        assert!(!arguments.contains("reviewThreads"));
+        assert_eq!(
+            std::fs::read_to_string(calls).unwrap().trim(),
+            "get task-42"
+        );
     }
 
     #[cfg(unix)]
@@ -4432,31 +4705,33 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn changed_gh_fingerprint_replays_once_without_duplicate_asana_mutations() {
+    async fn changed_event_fingerprint_replays_once_without_duplicate_asana_mutations() {
         let temp = tempfile::tempdir().unwrap();
-        let state = temp.path().join("gh-state");
-        std::fs::write(&state, "a").unwrap();
-        let gh_body = format!(
-            "if [ \"$(cat {})\" = a ]; then printf '%s' '{{\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reviews\":[]}}'; else printf '%s' '{{\"state\":\"CLOSED\",\"mergedAt\":null,\"headRefOid\":\"dddddddddddddddddddddddddddddddddddddddd\",\"reviews\":[]}}'; fi",
-            state.display()
-        );
-        let (mut ledger, targets, gh, calls) =
-            mocked_reconciliation_target(&temp, &gh_body, "exit 0");
-        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
-            .await
-            .unwrap();
-        reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
-            .await
-            .unwrap();
-        std::fs::write(&state, "b").unwrap();
-        // A concurrent daemon may own the reconciliation lock for one poll;
-        // an unchanged observed fingerprint must be retried without creating
-        // more than its one additional Asana mutation.
-        for _ in 0..3 {
-            reconcile_pull_request_observations_with_gh(&mut ledger, &targets, &gh)
-                .await
-                .unwrap();
-        }
+        let (mut ledger, targets, _gh, calls) =
+            mocked_reconciliation_target(&temp, "exit 99", "exit 0");
+        let repository_path = targets["example/repo"].path.clone();
+        reconcile_pull_request_event(
+            &mut ledger,
+            "example/repo",
+            "task-42",
+            &repository_path,
+            "closed",
+            &"a".repeat(64),
+            false,
+        )
+        .await
+        .unwrap();
+        reconcile_pull_request_event(
+            &mut ledger,
+            "example/repo",
+            "task-42",
+            &repository_path,
+            "closed",
+            &"d".repeat(64),
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 2);
     }
 
@@ -4469,6 +4744,11 @@ mod tests {
             (
                 "open",
                 "printf '%s' '{\"state\":\"opened\",\"merged_at\":null,\"sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"approved_by\":[]}'",
+                None,
+            ),
+            (
+                "failed-pipeline",
+                "printf '%s' '{\"state\":\"opened\",\"merged_at\":null,\"sha\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"approved_by\":[],\"head_pipeline\":{\"status\":\"failed\"}}'",
                 None,
             ),
             (
@@ -4497,7 +4777,10 @@ mod tests {
             let asana = clients.join("asana");
             std::fs::write(
                 &asana,
-                format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n", calls.display()),
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nif [ \"$1\" = get ]; then printf '%s' '{{\"data\":{{\"completed\":false,\"tags\":[{{\"name\":\"factory:auto-to-pr\"}}],\"memberships\":[{{\"section\":{{\"name\":\"Reviewing\"}}}}]}}}}'; fi\n",
+                    calls.display()
+                ),
             )
             .unwrap();
             let glab = temp.path().join("glab");
@@ -4516,6 +4799,14 @@ mod tests {
                     "https://gitlab.com/group/subgroup/repo/-/merge_requests/42",
                 )
                 .unwrap();
+            let continuation_task = (name == "failed-pipeline").then(|| {
+                successful_delivery_for_continuation(
+                    &mut ledger,
+                    "gitlab.com/group/subgroup/repo",
+                    "task-42",
+                    temp.path(),
+                )
+            });
             let targets = HashMap::from([(
                 "gitlab.com/group/subgroup/repo".to_owned(),
                 RepositoryTarget {
@@ -4552,7 +4843,20 @@ mod tests {
                     [format!("reconcile-pr task-42 --outcome {outcome}")],
                     "{name}"
                 ),
+                None if name == "failed-pipeline" => assert_eq!(
+                    std::fs::read_to_string(&calls)
+                        .unwrap()
+                        .lines()
+                        .collect::<Vec<_>>(),
+                    ["get task-42"],
+                ),
                 None => assert!(!calls.exists(), "{name}"),
+            }
+            if let Some(task_id) = continuation_task {
+                assert_eq!(
+                    ledger.task(task_id).unwrap().unwrap().state,
+                    TaskState::Queued
+                );
             }
         }
     }
