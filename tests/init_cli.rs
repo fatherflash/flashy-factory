@@ -136,6 +136,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("max_concurrent = 1"));
     assert!(config.contains("[trigger.triage]"));
     assert!(config.contains("[trigger.implement]"));
+    assert!(config.contains("[trigger.triage-manual]"));
+    assert!(config.contains("[trigger.implement-manual]"));
+    assert!(config.contains("factory:auto-to-pr"));
+    assert!(config.contains("factory:manual"));
     assert!(config.contains("[trigger.bug-finder]"));
     assert!(config.contains("workflow = \".flashy-factory/workflows/triage.md\""));
     assert!(config.contains("workflow = \".flashy-factory/workflows/implement.md\""));

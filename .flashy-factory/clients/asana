@@ -497,20 +497,99 @@ def list_source(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]
         tag_gids = sorted(
             str(tag.get("gid", "")) for tag in tags if isinstance(tag, dict)
         )
-        revision = f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}"
-        issues.append(
-            {
-                "key": gid,
-                "title": title,
-                "description": str(task.get("notes") or "")[:2000],
-                "state": state,
-                "labels": tag_names,
-                "url": str(task.get("permalink_url") or ""),
-                "author": str(author),
-                "revision": revision,
-            }
-        )
+        issue = {
+            "key": gid,
+            "title": title,
+            "description": str(task.get("notes") or "")[:2000],
+            "state": state,
+            "labels": tag_names,
+            "url": str(task.get("permalink_url") or ""),
+            "author": str(author),
+        }
+        if AUTHORIZATION_TAGS["autonomous_to_pr"] in tag_names:
+            dependency = dependency_state(client, gid, project_gid)
+            issue["revision"] = (
+                f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}:"
+                f"{dependency['dependency_revision']}"
+            )
+            issue["dependencies"] = dependency["dependencies"]
+            issue["dependency_revision"] = dependency["dependency_revision"]
+        else:
+            issue["revision"] = f"asana:{modified_at}:{section_gid}:{','.join(tag_gids)}"
+        issues.append(issue)
     return {"issues": issues}
+
+
+def dependency_state(client: AsanaClient, gid: str, project_gid: str) -> dict[str, Any]:
+    """Read a task's native dependency graph and reject unsafe observations.
+
+    The direct edge list controls implementation eligibility.  We also walk the
+    reachable graph so a cycle cannot be hidden behind an otherwise completed
+    direct blocker.  Every observed task must belong to this project only.
+    """
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    direct: list[str] = []
+    completion: dict[str, bool] = {}
+
+    def read(current: str, *, is_root: bool) -> None:
+        if current in visiting:
+            raise ClientError(f"dependency graph contains a cycle involving task {current}")
+        if current in visited:
+            return
+        visiting.add(current)
+        payload = client.request(
+            "GET",
+            f"/tasks/{encoded_gid(current)}",
+            query={
+                "opt_fields": "gid,completed,dependencies.gid,memberships.project.gid"
+            },
+        )
+        task = payload.get("data")
+        if not isinstance(task, dict) or task.get("gid") != current:
+            raise ClientError(f"dependency task {current} returned invalid data")
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list) or len(memberships) != 1:
+            raise ClientError(
+                f"dependency task {current} must belong to exactly ASANA_PROJECT_GID {project_gid}"
+            )
+        membership = memberships[0]
+        if (
+            not isinstance(membership, dict)
+            or not isinstance(membership.get("project"), dict)
+            or membership["project"].get("gid") != project_gid
+        ):
+            raise ClientError(
+                f"dependency task {current} does not belong only to ASANA_PROJECT_GID {project_gid}"
+            )
+        dependencies = task.get("dependencies")
+        if not isinstance(dependencies, list):
+            raise ClientError(f"dependency task {current} returned malformed dependencies")
+        if task.get("completed") not in {True, False}:
+            raise ClientError(f"dependency task {current} returned malformed completion state")
+        completion[current] = task["completed"]
+        dependency_gids: list[str] = []
+        for item in dependencies:
+            if not isinstance(item, dict):
+                raise ClientError(f"dependency task {current} returned malformed dependency")
+            dependency_gids.append(require_gid("dependency.gid", item.get("gid")))
+        if len(set(dependency_gids)) != len(dependency_gids):
+            raise ClientError(f"dependency task {current} returned duplicate dependencies")
+        for blocker in sorted(dependency_gids):
+            if is_root:
+                direct.append(blocker)
+            read(blocker, is_root=False)
+        visiting.remove(current)
+        visited.add(current)
+
+    read(gid, is_root=True)
+    observed = sorted((blocker, completion[blocker]) for blocker in direct)
+    canonical = json.dumps(observed, separators=(",", ":"), ensure_ascii=True)
+    return {
+        "dependencies": [blocker for blocker, _ in observed],
+        "dependency_revision": "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "blocked": any(not completed for _, completed in observed),
+    }
 
 
 def get_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -1561,6 +1640,11 @@ def parser() -> argparse.ArgumentParser:
     getting = subcommands.add_parser("get", help="fetch one live task")
     getting.add_argument("task_gid")
 
+    dependency = subcommands.add_parser(
+        "dependency-state", help="read and validate native dependency eligibility"
+    )
+    dependency.add_argument("task_gid")
+
     creating = subcommands.add_parser("create", help="create a project task")
     creating.add_argument("--project")
     creating.add_argument("--name", required=True)
@@ -1607,6 +1691,9 @@ def main() -> int:
             result = list_source(client, args)
         elif args.command == "get":
             result = get_task(client, args)
+        elif args.command == "dependency-state":
+            gid = require_gid("task_gid", args.task_gid)
+            result = dependency_state(client, gid, configured_project_gid())
         elif args.command == "create":
             result = create_task(client, args)
         elif args.command == "batch-create":

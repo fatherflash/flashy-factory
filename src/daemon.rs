@@ -3646,6 +3646,28 @@ fn execution_prompt(
         .source_item
         .as_deref()
         .context("ticket task has no source issue")?;
+    let dependency_context = task
+        .payload
+        .as_deref()
+        .and_then(|payload| serde_json::from_str::<SourceTicketContext>(payload).ok())
+        .filter(|context| {
+            !context.dependencies.is_empty() || !context.dependency_revision.is_empty()
+        })
+        .map(|context| {
+            let dependencies = context
+                .dependencies
+                .iter()
+                .map(|dependency| crate::inspection::sanitize_for_storage(dependency))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "\nObserved dependency context (revalidate live before claiming):\n\
+                 Dependency GIDs: {dependencies}\n\
+                 Dependency revision: {}\n",
+                crate::inspection::sanitize_for_storage(&context.dependency_revision),
+            )
+        })
+        .unwrap_or_default();
     Ok(format!(
         "# Flashy Factory execution policy\n\n\
          {HUMAN_MERGE_POLICY}\n\
@@ -3657,6 +3679,7 @@ fn execution_prompt(
          Repository: {}\n\
          Repository path: {}\n\
          Source issue: {issue}\n\
+         {dependency_context}\
          Timeout: {}\n\
          Prior Codex session: {}\n\n\
          # Validated workflow\n\n{}",
@@ -4053,7 +4076,9 @@ mod tests {
             repository: "example/repo".to_owned(),
             workflow: "implement".to_owned(),
             source_item: Some("#1".to_owned()),
-            payload: None,
+            payload: Some(
+                r##"{"key":"#1","title":"Fix","state":"Ready To Implement","labels":["factory:auto-to-pr"],"observed_revision":"asana:1","dependencies":["blocker-2","blocker-1"],"dependency_revision":"sha256:observed"}"##.to_owned(),
+            ),
             state: TaskState::Running,
             created_at: 0,
             updated_at: 0,
@@ -4089,6 +4114,11 @@ mod tests {
                 prompt.contains("does not create, find, update, or merge change requests for you")
             );
         }
+
+        let ticket_prompt =
+            execution_prompt(&ticket, 2, &repository, &workflow, None, None).unwrap();
+        assert!(ticket_prompt.contains("Dependency GIDs: blocker-2, blocker-1"));
+        assert!(ticket_prompt.contains("Dependency revision: sha256:observed"));
     }
 
     #[test]

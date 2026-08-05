@@ -21,8 +21,12 @@ these exact, case-sensitive section names:
 
 ```text
 Ready For Spec → Creating Spec → Awaiting Approval
-                                  ↓ human approval
+                                  ↓ manual approval
 Ready To Implement → Implementing → Reviewing → Done
+         ↑
+Approved - Waiting On Dependencies
+
+Needs Decision
 ```
 
 You can choose different names, but update `.flashy-factory/config.toml` and the
@@ -74,11 +78,26 @@ command = [".flashy-factory/sources/asana", "--max-results", "200"]
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/triage.md"
+
+[trigger.triage-manual]
+type = "source"
+state = "Ready For Spec"
+labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/triage.md"
 
 [trigger.implement]
 type = "source"
 state = "Ready To Implement"
+labels = ["factory:auto-to-pr"]
+workflow = ".flashy-factory/workflows/implement.md"
+timeout = "4h"
+
+[trigger.implement-manual]
+type = "source"
+state = "Ready To Implement"
+labels = ["factory:manual"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 ```
@@ -95,6 +114,15 @@ Asana tag name; all configured tags must be present. The adapter:
 Flashy Factory reruns the same query immediately before execution. A task moved
 out of the triggering section will not start.
 
+For autonomous tasks, the source query additionally fetches the native Asana
+dependency graph. It persists the direct dependency GIDs and a stable revision
+derived from sorted GIDs and their live completion states in the durable task
+context. The implementation workflow reads the graph again just before its
+claim. A changed revision or incomplete blocker returns the task to
+`Approved - Waiting On Dependencies`; malformed, inaccessible, cross-project,
+cyclic, or otherwise unresolved graphs go to `Needs Decision`. Sections remain
+the visible workflow state; do not replace them with an Epic custom field.
+
 ## Agent client operations
 
 Run these from the repository root. Substantial text uses files or standard
@@ -104,6 +132,7 @@ input so content is not mangled by shell quoting:
 # Discover and read
 .flashy-factory/clients/asana list --state "Ready To Implement"
 .flashy-factory/clients/asana get TASK_GID
+.flashy-factory/clients/asana dependency-state TASK_GID
 
 # Create and refine
 .flashy-factory/clients/asana create \
@@ -126,6 +155,11 @@ token. `create` and `list` use `ASANA_PROJECT_GID` unless `--project` is
 provided. Tag operations resolve existing tags in `ASANA_WORKSPACE_GID`.
 Missing or duplicate section/tag names are hard failures; the client does not
 guess.
+
+`dependency-state` follows native dependency edges, verifies that every task is
+accessible and belongs only to `ASANA_PROJECT_GID`, rejects malformed or cyclic
+graphs, and returns `dependencies`, `blocked`, and `dependency_revision`.
+Treat any failure as a decision boundary, not permission to implement.
 
 ## Create a verified batch
 
