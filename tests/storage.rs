@@ -10,9 +10,9 @@ use std::process::Command;
 
 use factory::repository::RepositoryProvider;
 use factory::storage::{
-    ApprovalEvidence, CancellationRequest, Ledger, MAX_ERROR_BYTES, MAX_RESULT_BYTES,
-    ObservedTicket, PullRequestEventState, PullRequestObservation, RunContainer, RunOutcome,
-    RunSandbox, TaskIdentity, TaskState, TaskWorkspace,
+    ApprovalEvidence, CancellationRequest, ContinuationRequest, Ledger, MAX_ERROR_BYTES,
+    MAX_RESULT_BYTES, ObservedTicket, PullRequestEventState, PullRequestObservation, RunContainer,
+    RunOutcome, RunSandbox, TaskIdentity, TaskState, TaskWorkspace,
 };
 use rusqlite::Connection;
 
@@ -2008,6 +2008,83 @@ fn pull_request_event_claim_is_exclusive_across_ledger_connections() {
             .claim_pull_request_event("acme/repository", "asana-42", &fingerprint)
             .unwrap(),
         Some(PullRequestEventState::Observed)
+    );
+}
+
+#[test]
+fn continuation_reservations_are_deduplicated_bounded_and_reuse_the_delivery_task() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let payload = r#"{"labels":["factory:auto-to-pr"]}"#;
+    let task = ledger
+        .enqueue_with_payload(
+            &TaskIdentity::ticket("acme/repository", "implement", "asana-42", "revision").unwrap(),
+            Some(payload),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .reserve_task_workspace(&TaskWorkspace {
+            task_id: task.id,
+            kind: "delivery".into(),
+            backend: "worktree".into(),
+            repository: "acme/repository".into(),
+            base_branch: "main".into(),
+            base_sha: "a".repeat(40),
+            factory_branch: Some("factory/42".into()),
+            path: temp.path().join("workspace"),
+            state: "retained".into(),
+            status_summary: None,
+            created_at: 0,
+            updated_at: 0,
+            cleaned_at: None,
+        })
+        .unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+
+    assert_eq!(
+        ledger
+            .request_continuation("acme/repository", "asana-42", &"1".repeat(64))
+            .unwrap(),
+        ContinuationRequest::Queued
+    );
+    assert_eq!(
+        ledger.task(task.id).unwrap().unwrap().state,
+        TaskState::Queued
+    );
+    assert_eq!(
+        ledger
+            .request_continuation("acme/repository", "asana-42", &"1".repeat(64))
+            .unwrap(),
+        ContinuationRequest::Duplicate
+    );
+    for event in ["2".repeat(64), "3".repeat(64)] {
+        let claimed = ledger.claim_next().unwrap().unwrap();
+        let run = ledger.start_run(claimed.id, "codex").unwrap();
+        ledger
+            .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+            .unwrap();
+        assert_eq!(
+            ledger
+                .request_continuation("acme/repository", "asana-42", &event)
+                .unwrap(),
+            ContinuationRequest::Queued
+        );
+    }
+    let claimed = ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(claimed.id, "codex").unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+    assert_eq!(
+        ledger
+            .request_continuation("acme/repository", "asana-42", &"4".repeat(64))
+            .unwrap(),
+        ContinuationRequest::LimitReached
     );
 }
 
