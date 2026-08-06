@@ -685,6 +685,40 @@ mod tests {
     }
 
     #[test]
+    fn independent_deliveries_get_distinct_worktrees_from_the_same_base() {
+        let fixture = Fixture::new();
+        let manager = fixture.manager();
+        let first = manager
+            .prepare_delivery(
+                42,
+                "First autonomous delivery",
+                "main",
+                &fixture.head,
+                DeliveryReuse::Reject,
+            )
+            .unwrap();
+        let second = manager
+            .prepare_delivery(
+                43,
+                "Second autonomous delivery",
+                "main",
+                &fixture.head,
+                DeliveryReuse::Reject,
+            )
+            .unwrap();
+
+        assert_ne!(first.path, second.path);
+        assert_ne!(first.branch, second.branch);
+        assert!(first.path.starts_with(&fixture.root));
+        assert!(second.path.starts_with(&fixture.root));
+        assert_eq!(run(&first.path, ["rev-parse", "HEAD"]).trim(), fixture.head);
+        assert_eq!(
+            run(&second.path, ["rev-parse", "HEAD"]).trim(),
+            fixture.head
+        );
+    }
+
+    #[test]
     fn preparing_recovery_only_adopts_a_clean_exact_base() {
         let fixture = Fixture::new();
         let manager = fixture.manager();
@@ -733,6 +767,34 @@ mod tests {
             fixture.manager().fetch_default_branch("main").unwrap(),
             fixture.head
         );
+    }
+
+    #[test]
+    fn fresh_default_branch_fetch_includes_a_merged_predecessor() {
+        let fixture = Fixture::new();
+        fs::write(fixture.repository.join("predecessor.txt"), "merged\n").unwrap();
+        run(&fixture.repository, ["add", "predecessor.txt"]);
+        run(&fixture.repository, ["commit", "-m", "merge predecessor"]);
+        run(&fixture.repository, ["push", "origin", "main"]);
+        let merged = run(&fixture.repository, ["rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+
+        let manager = fixture.manager();
+        let base = manager.fetch_default_branch("main").unwrap();
+        let dependent = manager
+            .prepare_delivery(
+                44,
+                "Dependent autonomous delivery",
+                "main",
+                &base,
+                DeliveryReuse::Reject,
+            )
+            .unwrap();
+
+        assert_eq!(base, merged);
+        assert_eq!(run(&dependent.path, ["rev-parse", "HEAD"]).trim(), merged);
+        assert!(dependent.path.join("predecessor.txt").is_file());
     }
 
     #[test]

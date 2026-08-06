@@ -4483,6 +4483,8 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     #[cfg(unix)]
     use std::sync::Mutex;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[cfg(unix)]
     use async_trait::async_trait;
@@ -4879,6 +4881,13 @@ mod tests {
     }
 
     #[cfg(unix)]
+    struct BlockingRecordingRuntime {
+        directories: Mutex<Vec<PathBuf>>,
+        entered: AtomicUsize,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[cfg(unix)]
     #[async_trait]
     impl AgentRuntime for RecordingRuntime {
         async fn health_check_with_cancellation(
@@ -4917,6 +4926,261 @@ mod tests {
                 activity_error: None,
                 stderr_tail: String::new(),
             })
+        }
+    }
+
+    #[cfg(unix)]
+    #[async_trait]
+    impl AgentRuntime for BlockingRecordingRuntime {
+        async fn health_check_with_cancellation(
+            &self,
+            _cancellation: CancellationToken,
+        ) -> Result<crate::runtime::RuntimeHealth> {
+            Ok(crate::runtime::RuntimeHealth {
+                version: "test".into(),
+                authentication: "test".into(),
+            })
+        }
+
+        async fn run(
+            &self,
+            _prompt: &str,
+            working_directory: &Path,
+            _run_timeout: Duration,
+            _agent_profile: Option<&AgentProfile>,
+            _cancellation: CancellationToken,
+            _resume_session: Option<&str>,
+            _observations: tokio::sync::watch::Sender<RuntimeObservation>,
+            _before_spawn: Option<crate::runtime::BeforeSpawn<'_>>,
+        ) -> Result<ExecutionResult> {
+            self.directories
+                .lock()
+                .unwrap()
+                .push(working_directory.to_owned());
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            self.release.acquire().await.unwrap().forget();
+            Ok(ExecutionResult {
+                status: std::process::ExitStatus::from_raw(0),
+                termination: Termination::Exited,
+                final_response: "done".into(),
+                final_response_truncated: false,
+                thread_id: Some("test-thread".into()),
+                duration: Duration::ZERO,
+                activity_lines: 0,
+                activity_error: None,
+                stderr_tail: String::new(),
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn two_ticket_workers_use_distinct_worktrees_while_the_fifo_third_waits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn git(directory: &Path, arguments: &[&str]) {
+            let output = std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(directory)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repository");
+        let workspace_root = temp.path().join("worktrees");
+        std::fs::create_dir(&repository).unwrap();
+        std::fs::create_dir(&workspace_root).unwrap();
+        git(&repository, &["init", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "factory@example.test"],
+        );
+        git(&repository, &["config", "user.name", "Factory"]);
+        std::fs::write(repository.join("README.md"), "fixture\n").unwrap();
+        git(&repository, &["add", "README.md"]);
+        git(&repository, &["commit", "-m", "fixture"]);
+        let remote = temp.path().join("origin.git");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "--bare",
+                repository.to_str().unwrap(),
+                remote.to_str().unwrap(),
+            ],
+        );
+        git(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let repository = repository.canonicalize().unwrap();
+        let workspace_root = workspace_root.canonicalize().unwrap();
+
+        let source = temp.path().join("source");
+        std::fs::write(&source, "#!/bin/sh\nprintf '%s\\n' '{\"issues\":[{\"key\":\"1\",\"title\":\"one\",\"state\":\"Ready\",\"labels\":[\"auto\"]},{\"key\":\"2\",\"title\":\"two\",\"state\":\"Ready\",\"labels\":[\"auto\"]},{\"key\":\"3\",\"title\":\"three\",\"state\":\"Ready\",\"labels\":[\"auto\"]}]}'\n").unwrap();
+        let mut permissions = std::fs::metadata(&source).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&source, permissions).unwrap();
+        let gh = temp.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\nprintf '%s' 'main'\n").unwrap();
+        let mut permissions = std::fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&gh, permissions).unwrap();
+
+        let workflow = WorkflowTarget {
+            prompt: "Implement it.".into(),
+            runtime: "codex".into(),
+            timeout: Duration::from_secs(60),
+            trigger: Trigger::Source {
+                state: "Ready".into(),
+                labels: vec!["auto".into()],
+            },
+            agent_profile: (
+                "test".into(),
+                AgentProfile {
+                    model: "gpt-5.3-codex".into(),
+                    reasoning_effort: "high".into(),
+                    service_tier: "priority".into(),
+                },
+            ),
+        };
+        let target = RepositoryTarget {
+            path: repository.clone(),
+            provider: crate::repository::RepositoryProvider::GitHub,
+            identity: "example/repository".into(),
+            workflows: HashMap::from([("implement".into(), workflow)]),
+        };
+        let targets = HashMap::from([("example/repository".into(), target)]);
+        let ledger_path = temp.path().join("ledger.db");
+        let mut ledger = Ledger::open(&ledger_path).unwrap();
+        let titles = ["one", "two", "three"];
+        for number in 1..=3 {
+            let payload = serde_json::json!({"key": number.to_string(), "title": titles[(number - 1) as usize], "state": "Ready", "labels": ["auto"], "observed_revision": format!("r{number}")}).to_string();
+            ledger
+                .enqueue_with_payload(
+                    &TaskIdentity::ticket(
+                        "example/repository",
+                        "implement",
+                        number.to_string(),
+                        format!("r{number}"),
+                    )
+                    .unwrap(),
+                    Some(&payload),
+                )
+                .unwrap();
+        }
+        let owner = DaemonOwner::new().unwrap();
+        ledger.register_daemon_owner(&owner.id, owner.pid).unwrap();
+        let runtime = Arc::new(BlockingRecordingRuntime {
+            directories: Mutex::new(Vec::new()),
+            entered: AtomicUsize::new(0),
+            release: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let runtime_trait: Arc<dyn AgentRuntime> = runtime.clone();
+        let github = GitHubClient::new(gh);
+        let forge = forge_for_with_github(
+            crate::repository::RepositoryProvider::GitHub,
+            github.clone(),
+        );
+        let mut active = HashMap::new();
+        let mut runs = JoinSet::new();
+        let mut warning = false;
+        let source_config = SourceConfig {
+            command: vec![source.display().to_string()],
+            owner: String::new(),
+            project_number: 0,
+            status_field: String::new(),
+            trusted_users: Vec::new(),
+        };
+        dispatch_available(
+            &mut ledger,
+            &targets,
+            &mut active,
+            &mut runs,
+            2,
+            2,
+            &ledger_path,
+            &runtime_trait,
+            None,
+            &forge,
+            &github,
+            &SourceClient,
+            Some(&source_config),
+            &workspace_root,
+            &mut warning,
+            &CancellationToken::new(),
+            &owner,
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while runtime.entered.load(Ordering::SeqCst) != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let tasks = ledger.tasks().unwrap();
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|task| task.state == TaskState::Running)
+                .count(),
+            2
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|task| task.state == TaskState::Queued)
+                .count(),
+            1
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|task| task.source_item.as_deref() == Some("1"))
+                .unwrap()
+                .state,
+            TaskState::Running
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|task| task.source_item.as_deref() == Some("2"))
+                .unwrap()
+                .state,
+            TaskState::Running
+        );
+        assert_eq!(
+            tasks
+                .iter()
+                .find(|task| task.source_item.as_deref() == Some("3"))
+                .unwrap()
+                .state,
+            TaskState::Queued
+        );
+        let workspaces = tasks
+            .iter()
+            .filter_map(|task| ledger.task_workspace(task.id).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(workspaces.len(), 2);
+        assert_ne!(workspaces[0].path, workspaces[1].path);
+        assert!(
+            workspaces
+                .iter()
+                .all(|workspace| workspace.path.starts_with(&workspace_root))
+        );
+        assert_eq!(runtime.directories.lock().unwrap().len(), 2);
+        runtime.release.add_permits(2);
+        while let Some(joined) = runs.join_next().await {
+            joined.unwrap().1.unwrap();
         }
     }
 
@@ -4987,7 +5251,14 @@ mod tests {
                 expression: "*/10 * * * *".to_owned(),
                 timezone: chrono_tz::UTC,
             },
-            agent_profile: ("test".into(), AgentProfile { model: "gpt-5.3-codex".into(), reasoning_effort: "high".into(), service_tier: "priority".into() }),
+            agent_profile: (
+                "test".into(),
+                AgentProfile {
+                    model: "gpt-5.3-codex".into(),
+                    reasoning_effort: "high".into(),
+                    service_tier: "priority".into(),
+                },
+            ),
         };
         let scheduled = Task {
             id: 1,

@@ -54,6 +54,34 @@ The unscoped ledgers `~/.flashy-factory/factory.sqlite3` and legacy
 owned by an old process could overlap. These guards run when `factory run`
 starts; inspection and cleanup commands remain available.
 
+## Repository worker concurrency
+
+New repository-owned configurations start two workers at a time:
+
+```toml
+[worker]
+max_concurrent = 2
+```
+
+Every ticket worker still receives a separate Flashy Factory-owned worktree.
+FIFO keeps a third eligible task queued until a slot opens, and source
+reauthorization still happens immediately before each worker starts. Autonomous
+dependency work is released only after its predecessor's pull request is
+human-merged; the dependent worktree is then prepared from a fresh fetch of the
+default branch, including that merge. Flashy Factory never merges a pull
+request or enables auto-merge.
+
+For a safe rollout, change only `worker.max_concurrent` to `2`, restart the
+daemon, and inspect `factory tasks`, `factory runs`, and `factory workspaces`
+while two independent tickets run. At the ten retained-delivery-worktree
+capacity, new delivery tasks remain queued, while recovery and reconciliation
+for a task that already owns a worktree can continue. Inspect a retained
+workspace before using `factory cleanup RUN_ID --confirm`.
+
+To roll back, stop the daemon, set `worker.max_concurrent = 1`, and restart.
+Active workers finish or are cancelled through the normal durable shutdown
+path; do not delete worktrees or reset the ledger to reduce concurrency.
+
 ## Fleet operation
 
 Run more than one trusted primary checkout from an explicit fleet file:

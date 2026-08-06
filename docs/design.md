@@ -131,7 +131,7 @@ runtime = "codex"
 sandbox = "worktree"
 timeout = "2h"
 maximum_timeout = "8h"
-max_concurrent = 1
+max_concurrent = 2
 
 [source]
 command = [".flashy-factory/sources/asana", "--max-results", "200"]
