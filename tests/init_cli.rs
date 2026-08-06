@@ -137,7 +137,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(!config.contains("--project-number"));
     assert!(!config.contains("--trusted-user"));
     assert!(config.contains("[worker]"));
-    assert!(config.contains("max_concurrent = 1"));
+    assert!(config.contains("max_concurrent = 2"));
     assert!(config.contains("[trigger.triage]"));
     assert!(config.contains("[trigger.implement]"));
     assert!(config.contains("[trigger.reconcile-dependencies]"));

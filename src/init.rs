@@ -607,7 +607,9 @@ fn default_config(
     document["worker"]["sandbox"] = value(execution_mode.to_string());
     document["worker"]["timeout"] = value("2h");
     document["worker"]["maximum_timeout"] = value("8h");
-    document["worker"]["max_concurrent"] = value(1);
+    // This repository-owned limit still gives every ticket an isolated
+    // worktree; human review remains the only merge boundary.
+    document["worker"]["max_concurrent"] = value(2);
     if execution_mode == ExecutionMode::DockerSandbox {
         document["worker"]["template"] = value("docker/sandbox-templates:codex-docker");
         document["worker"]["memory"] = value("8g");

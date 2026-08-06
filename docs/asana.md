@@ -149,7 +149,10 @@ For a merged autonomous PR, the daemon re-reads Asana, moves the linked task to
 An eligible autonomous dependent moves to `Ready To Implement`. A closed but
 unmerged PR moves only its linked task to `Needs Decision`. Missing,
 cross-project, contradictory, inaccessible, or otherwise unsafe observations
-fail closed to `Needs Decision`; `factory:manual` work remains untouched.
+fail closed to `Needs Decision`; `factory:manual` work remains untouched. The
+released dependent is reauthorized before execution, then its managed worktree
+is created from a fresh fetch of the default branch, including the predecessor's
+human-merged change rather than the pre-merge base.
 
 Operators need both the scoped Asana token above and an authenticated `gh`
 session permitted to read the repository's pull requests. This path never
