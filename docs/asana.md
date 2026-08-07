@@ -21,7 +21,7 @@ these exact, case-sensitive section names:
 
 ```text
 Ready For Spec → Creating Spec → Awaiting Approval
-                                  ↓ manual approval
+                                  ↓ human dependency approval
 Ready To Implement → Implementing → Reviewing → Done
          ↑
 Approved - Waiting On Dependencies
@@ -125,14 +125,42 @@ Asana tag name; all configured tags must be present. The adapter:
 Flashy Factory reruns the same query immediately before execution. A task moved
 out of the triggering section will not start.
 
-`Approved - Waiting On Dependencies` has its own autonomous-only source
-trigger. Each poll re-reads the live native graph. The stable observation
+`Approved - Waiting On Dependencies` has its own autonomous-only source trigger.
+Each poll re-reads the live native graph. The stable observation
 revision includes the direct dependency GIDs and completion states, so a graph
 or completion change creates one new reconciliation pass without restarting the
 daemon; an unchanged waiting observation does not repeatedly enqueue work. The
 reconciliation workflow moves only a fully unblocked autonomous task to `Ready
 To Implement`, leaves a blocked task waiting, and sends an unsafe graph to
-`Needs Decision`. `factory:manual` tasks are excluded from this path.
+`Needs Decision`. A manual dependent remains waiting until a human verifies the
+predecessor PR was human-merged and explicitly moves it to `Ready To Implement`.
+
+## Review inferred dependencies during specification approval
+
+When a specification is ready, the triage workflow reads incomplete planned and
+active project tasks and comments with advisory dependency candidates. Each
+candidate includes a concise rationale and a low, medium, or high confidence.
+It is never a native edge by itself. The human reviewer confirms, rejects, or
+corrects every suggestion while the task remains in `Awaiting Approval`.
+
+To approve the specification, create an approval file containing only the
+blocker GIDs the human confirmed (an empty list explicitly confirms independent
+work), then run:
+
+```json
+{"confirmed_dependencies":["blocker-gid"]}
+```
+
+```sh
+.flashy-factory/clients/asana apply-spec-approval TASK_GID --input /tmp/asana-approval.json
+```
+
+The command checks the live task, requires the approval section and exactly one
+delivery-policy tag, validates each blocker belongs to the project, writes only
+the confirmed native links, and then routes the task. An independent task is
+sent directly to `Ready To Implement`; an autonomous task still blocked by a
+confirmed predecessor is sent to `Approved - Waiting On Dependencies` until
+the predecessor's PR is human-merged.
 
 ## Trusted pull-request reconciliation
 
@@ -177,6 +205,8 @@ input so content is not mangled by shell quoting:
 .flashy-factory/clients/asana list --state "Ready To Implement"
 .flashy-factory/clients/asana get TASK_GID
 .flashy-factory/clients/asana dependency-state TASK_GID
+.flashy-factory/clients/asana dependency-review TASK_GID
+.flashy-factory/clients/asana apply-spec-approval TASK_GID --input /tmp/asana-approval.json
 
 # Create and refine
 .flashy-factory/clients/asana create \

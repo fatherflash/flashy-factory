@@ -48,25 +48,43 @@ Classify actionable work with exactly one of `bug`, `enhancement`, or
 
 ## Route the completed specification
 
-Add one concise comment with the resulting scope, evidence, risks, and next
-action. Re-read the task's tags before routing it. A task with both
+Before routing, review planned and active work for likely prerequisites:
+
+```sh
+.flashy-factory/clients/asana dependency-review <task-gid>
+```
+
+Use repository and product context to decide whether each candidate is a real
+dependency. Add one concise comment containing every suggested edge in the form
+`this task -> blocker GID`, its rationale and confidence, plus an explicit
+`No dependency suggested` when the work is independent. Suggestions are
+advisory only: do not create native links, and do not let a suggestion block
+the task. Tell the approver to confirm, reject, or replace every suggestion.
+
+Re-read the task's tags before routing it. A task with both
 `factory:auto-to-pr` and `factory:manual`, neither authorization tag, or an
 unreadable native dependency graph is unsafe: explain the evidence and move it
 to `Needs Decision`.
 
-For `factory:manual`, move a complete specification to `Awaiting Approval`.
-That existing human approval boundary remains unchanged.
+For both `factory:manual` and `factory:auto-to-pr`, move a complete
+specification to `Awaiting Approval`. This is the human dependency-review
+boundary; autonomous work must not bypass it.
 
-For `factory:auto-to-pr`, read live native dependencies immediately before the
-move:
+The human approver must record the final decision and use the client to apply
+only the confirmed or corrected blocker GIDs before the task reaches `Ready To
+Implement`:
 
-```sh
-.flashy-factory/clients/asana dependency-state <task-gid>
+```json
+{"confirmed_dependencies":["blocker-gid"]}
 ```
 
-Record the returned dependency GIDs and `dependency_revision` in the Asana
-comment. If every dependency is complete, move the task to `Ready To Implement`.
-If any dependency is incomplete, move it to `Approved - Waiting On
+```sh
+.flashy-factory/clients/asana apply-spec-approval <task-gid> --input /tmp/asana-approval.json
+```
+
+Use an empty array for independent work. The command validates the live graph,
+writes only the supplied native Asana links, then routes an unblocked task to
+`Ready To Implement` or an autonomous blocked task to `Approved - Waiting On
 Dependencies`. Do not use an Epic or custom field as a substitute for this
 section-based state.
 
