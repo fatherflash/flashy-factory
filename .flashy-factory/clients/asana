@@ -28,6 +28,7 @@ TASK_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
 BATCH_CREATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 MAX_BATCH_TASKS = 25
 MAX_TASK_RELATIONSHIPS = 30
+MAX_DEPENDENCY_REVIEW_TASKS = 500
 BACKLOG_SECTION = "Backlog"
 READY_FOR_SPEC_SECTION = "Ready For Spec"
 AUTHORIZATION_TAGS = {
@@ -631,6 +632,146 @@ def dependency_state(
             if node != gid and node not in assumed_completed
         ),
     }
+
+
+def review_terms(value: str) -> set[str]:
+    ignored = {
+        "about", "after", "also", "and", "are", "before", "from", "have",
+        "into", "need", "that", "the", "this", "with", "will", "work",
+    }
+    return {
+        word for word in re.findall(r"[a-z0-9]{4,}", value.lower())
+        if word not in ignored
+    }
+
+
+def dependency_review(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    """Return advisory dependency candidates from incomplete project work."""
+    gid = require_gid("task_gid", args.task_gid)
+    project_gid = configured_project_gid()
+    current = task_in_project(client, gid, project_gid, include_context=True)
+    tasks = client.paginate(
+        f"/projects/{encoded_gid(project_gid)}/tasks",
+        query={
+            "completed_since": "now",
+            "opt_fields": "gid,name,notes,completed,memberships.project.gid,memberships.section.name",
+        },
+        maximum=MAX_DEPENDENCY_REVIEW_TASKS,
+    )
+    current_terms = review_terms(f"{current.get('name', '')} {current.get('notes', '')}")
+    candidates: list[dict[str, Any]] = []
+    for task in tasks:
+        candidate_gid = require_gid("project task.gid", task.get("gid"))
+        if candidate_gid == gid or task.get("completed") is True:
+            continue
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list) or not any(
+            isinstance(membership, dict)
+            and isinstance(membership.get("project"), dict)
+            and membership["project"].get("gid") == project_gid
+            for membership in memberships
+        ):
+            raise ClientError(f"project task {candidate_gid} is outside ASANA_PROJECT_GID {project_gid}")
+        name = task.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ClientError(f"project task {candidate_gid} has no valid name")
+        shared = sorted(current_terms & review_terms(f"{name} {task.get('notes', '')}"))
+        if not shared:
+            continue
+        section_names = sorted(
+            str(membership["section"].get("name"))
+            for membership in memberships
+            if isinstance(membership, dict) and isinstance(membership.get("section"), dict)
+            and isinstance(membership["section"].get("name"), str)
+        )
+        confidence = "high" if len(shared) >= 3 else "medium" if len(shared) == 2 else "low"
+        candidates.append({
+            "gid": candidate_gid, "name": name, "sections": section_names,
+            "confidence": confidence,
+            "rationale": "Shares planning terms: " + ", ".join(shared[:5]),
+        })
+    candidates.sort(key=lambda item: ({"high": 0, "medium": 1, "low": 2}[item["confidence"]], item["name"].lower(), item["gid"]))
+    return {"task_gid": gid, "candidates": candidates}
+
+
+def dependency_reaches(
+    client: AsanaClient, start: str, target: str, project_gid: str
+) -> bool:
+    """Check a prospective edge before writing it, so approval cannot create a cycle."""
+    pending = [start]
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == target:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        payload = client.request(
+            "GET",
+            f"/tasks/{encoded_gid(current)}",
+            query={"opt_fields": "gid,dependencies.gid,memberships.project.gid"},
+        )
+        task = payload.get("data")
+        if not isinstance(task, dict) or task.get("gid") != current:
+            raise ClientError(f"dependency task {current} returned invalid data")
+        memberships = task.get("memberships")
+        if not isinstance(memberships, list) or len(memberships) != 1:
+            raise ClientError(f"dependency task {current} must belong to exactly ASANA_PROJECT_GID {project_gid}")
+        membership = memberships[0]
+        if not isinstance(membership, dict) or not isinstance(membership.get("project"), dict) or membership["project"].get("gid") != project_gid:
+            raise ClientError(f"dependency task {current} does not belong only to ASANA_PROJECT_GID {project_gid}")
+        dependencies = task.get("dependencies")
+        if not isinstance(dependencies, list):
+            raise ClientError(f"dependency task {current} returned malformed dependencies")
+        pending.extend(require_gid("dependency.gid", item.get("gid")) for item in dependencies if isinstance(item, dict))
+        if any(not isinstance(item, dict) for item in dependencies):
+            raise ClientError(f"dependency task {current} returned malformed dependency")
+    return False
+
+
+def apply_spec_approval(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
+    """Write human-confirmed native dependencies, then route an approved spec."""
+    gid = require_gid("task_gid", args.task_gid)
+    project_gid = configured_project_gid()
+    task = task_in_project(client, gid, project_gid, include_context=True)
+    memberships = task.get("memberships") if isinstance(task.get("memberships"), list) else []
+    sections = {membership["section"].get("name") for membership in memberships if isinstance(membership, dict) and isinstance(membership.get("section"), dict)}
+    if sections != {"Awaiting Approval"}:
+        raise ClientError("spec approval requires the task to remain in Awaiting Approval")
+    tags = task.get("tags") if isinstance(task.get("tags"), list) else []
+    tag_names = {tag.get("name") for tag in tags if isinstance(tag, dict)}
+    autonomous = AUTHORIZATION_TAGS["autonomous_to_pr"] in tag_names
+    manual = AUTHORIZATION_TAGS["backlog_only"] in tag_names
+    if autonomous == manual:
+        raise ClientError("spec approval requires exactly one factory authorization tag")
+    approval = read_json(args.input, "approval")
+    reject_unknown_fields(approval, {"confirmed_dependencies"}, "approval")
+    raw_dependencies = approval.get("confirmed_dependencies")
+    if not isinstance(raw_dependencies, list) or not all(isinstance(item, str) for item in raw_dependencies):
+        raise ClientError("approval.confirmed_dependencies must be an array of task GIDs")
+    confirmed = sorted({require_gid("approval dependency", item) for item in raw_dependencies})
+    if len(confirmed) != len(raw_dependencies):
+        raise ClientError("approval.confirmed_dependencies contains a duplicate dependency")
+    if gid in confirmed:
+        raise ClientError("a task cannot be its own dependency")
+    for blocker in confirmed:
+        task_in_project(client, blocker, project_gid)
+    live = dependency_state(client, gid, project_gid)
+    existing = set(live["dependencies"])
+    additions = [blocker for blocker in confirmed if blocker not in existing]
+    removals = sorted(existing - set(confirmed))
+    for blocker in additions:
+        if dependency_reaches(client, blocker, gid, project_gid):
+            raise ClientError(f"confirmed dependency {blocker} would create a cycle involving task {gid}")
+    if additions:
+        client.request("POST", f"/tasks/{encoded_gid(gid)}/addDependencies", data={"dependencies": additions})
+    if removals:
+        client.request("POST", f"/tasks/{encoded_gid(gid)}/removeDependencies", data={"dependencies": removals})
+    dependency = dependency_state(client, gid, project_gid)
+    destination = "Approved - Waiting On Dependencies" if dependency["blocked"] else "Ready To Implement"
+    move_task(client, argparse.Namespace(task_gid=gid, section=destination))
+    return {"task_gid": gid, "confirmed_dependencies": confirmed, "added_dependencies": additions, "removed_dependencies": removals, "dependency_revision": dependency["dependency_revision"], "destination": destination}
 
 
 def get_task(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any]:
@@ -1808,6 +1949,13 @@ def parser() -> argparse.ArgumentParser:
     )
     dependency.add_argument("task_gid")
 
+    reviewing = subcommands.add_parser("dependency-review", help="list advisory dependency candidates for a specification")
+    reviewing.add_argument("task_gid")
+
+    approving = subcommands.add_parser("apply-spec-approval", help="apply human-confirmed dependencies and route an approved specification")
+    approving.add_argument("task_gid")
+    approving.add_argument("--input", required=True, help="approval JSON path, or - for standard input")
+
     reconciliation = subcommands.add_parser("reconcile-pr", help="apply one terminal trusted PR observation")
     reconciliation.add_argument("task_gid")
     reconciliation.add_argument("--outcome", required=True, choices=["merged", "closed", "unsafe"])
@@ -1861,6 +2009,10 @@ def main() -> int:
         elif args.command == "dependency-state":
             gid = require_gid("task_gid", args.task_gid)
             result = dependency_state(client, gid, configured_project_gid())
+        elif args.command == "dependency-review":
+            result = dependency_review(client, args)
+        elif args.command == "apply-spec-approval":
+            result = apply_spec_approval(client, args)
         elif args.command == "reconcile-pr":
             result = reconcile_pull_request(client, args)
         elif args.command == "create":

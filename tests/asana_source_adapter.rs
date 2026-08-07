@@ -986,6 +986,9 @@ fn autonomous_workflows_route_decisions_and_preserve_manual_approval() {
     assert!(triage.contains("Needs Decision"));
     assert!(triage.contains("factory:manual"));
     assert!(triage.contains("Awaiting Approval"));
+    assert!(triage.contains("dependency-review"));
+    assert!(triage.contains("apply-spec-approval"));
+    assert!(triage.contains("advisory only"));
     assert!(implement.contains("dependency-state"));
     assert!(implement.contains("Needs Decision"));
     assert!(reconcile.contains("Approved - Waiting On Dependencies"));
@@ -1107,6 +1110,144 @@ fn asana_client_supports_focused_agent_updates() {
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&requests[9].body).unwrap(),
         serde_json::json!({"data":{"tag":"tag-ready"}})
+    );
+}
+
+#[test]
+fn dependency_review_is_advisory_and_ranks_planned_work_with_rationale() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-current","name":"Add payment schema","notes":"Create payment API schema","memberships":[{"project":{"gid":"project-1"},"section":{"name":"Creating Spec"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"task-schema","name":"Create payment API schema","notes":"Shared payment contract","completed":false,"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Ready To Implement"}}]},{"gid":"task-unrelated","name":"Update dashboard colors","notes":"Visual refresh","completed":false,"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Implementing"}}]}],"next_page":null}"#,
+            headers: &[],
+        },
+    ]);
+    let output = run_client(&api_base, &["dependency-review", "task-current"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let review: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(review["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(review["candidates"][0]["gid"], "task-schema");
+    assert_eq!(review["candidates"][0]["confidence"], "high");
+    assert!(
+        review["candidates"][0]["rationale"]
+            .as_str()
+            .unwrap()
+            .contains("payment")
+    );
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.head.starts_with("POST "))
+    );
+}
+
+#[test]
+fn spec_approval_writes_only_confirmed_native_dependencies_before_routing() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-42","tags":[{"name":"factory:auto-to-pr"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Awaiting Approval"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-blocker","memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-42","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-blocker","dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-42","completed":false,"dependencies":[{"gid":"task-blocker"}],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-blocker","completed":false,"dependencies":[],"memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{"gid":"task-42","memberships":[{"project":{"gid":"project-1"}}]}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"waiting","name":"Approved - Waiting On Dependencies"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+    ]);
+    let temp = tempfile::tempdir().unwrap();
+    let approval = temp.path().join("approval.json");
+    fs::write(&approval, r#"{"confirmed_dependencies":["task-blocker"]}"#).unwrap();
+    let output = run_client(
+        &api_base,
+        &[
+            "apply-spec-approval",
+            "task-42",
+            "--input",
+            approval.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        result["added_dependencies"],
+        serde_json::json!(["task-blocker"])
+    );
+    assert_eq!(result["destination"], "Approved - Waiting On Dependencies");
+    let requests = server.join().unwrap();
+    let mutations = requests
+        .iter()
+        .filter(|request| request.head.starts_with("POST "))
+        .collect::<Vec<_>>();
+    assert_eq!(mutations.len(), 2);
+    assert!(
+        mutations[0]
+            .head
+            .starts_with("POST /tasks/task-42/addDependencies ")
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&mutations[0].body).unwrap(),
+        serde_json::json!({"data": {"dependencies": ["task-blocker"]}})
+    );
+    assert!(
+        mutations[1]
+            .head
+            .starts_with("POST /sections/waiting/addTask ")
     );
 }
 

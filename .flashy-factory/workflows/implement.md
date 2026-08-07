@@ -14,8 +14,9 @@ linked or related GitHub pull requests and CI state with authenticated `gh` and
 
 Confirm the task belongs to `ASANA_PROJECT_GID` and is still in
 `Ready To Implement`, then re-read its authorization tag. `factory:manual`
-retains the established human-approved implementation path: claim it without
-autonomous dependency routing.
+retains the established human-approved implementation path: a human must only
+move a waiting dependent here after verifying its predecessor pull request was
+human-merged; do not use automated dependency routing for this policy.
 
 For `factory:auto-to-pr`, immediately revalidate live native dependencies:
 

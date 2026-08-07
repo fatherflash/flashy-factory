@@ -172,11 +172,14 @@ Ready For Spec → Creating Spec → Awaiting Approval
                                   ↓ manual approval
 Ready To Implement → Implementing → Reviewing → Done
 
-Autonomous tasks carry `factory:auto-to-pr`. After specification, Flashy
-Factory moves an unblocked task to `Ready To Implement`, a task with an
-incomplete native Asana dependency to `Approved - Waiting On Dependencies`,
-and ambiguous or unsafe work to `Needs Decision`. Manual tasks retain the
-`Awaiting Approval` boundary.
+Every specification enters `Awaiting Approval`. During that human review,
+Flashy Factory presents advisory dependency suggestions (with rationale and
+confidence); the approver confirms, rejects, or corrects each one. Only the
+confirmed native Asana links are written before a task can enter `Ready To
+Implement`. Independent tasks use an empty confirmation and remain eligible
+for the two-worker implementation flow. An autonomous task with an incomplete
+confirmed dependency moves to `Approved - Waiting On Dependencies`; ambiguous
+or unsafe work moves to `Needs Decision`.
 ```
 
 Section names are not built in. If your project uses different names, update

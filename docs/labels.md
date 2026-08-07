@@ -11,7 +11,7 @@ project:
 
 ```text
 Ready For Spec → Creating Spec → Awaiting Approval
-                                  ↓ manual approval
+                                  ↓ human dependency approval
 Ready To Implement → Implementing → Reviewing → Done
          ↑
 Approved - Waiting On Dependencies
@@ -21,17 +21,19 @@ Needs Decision
 
 `Ready For Spec` and `Ready To Implement` are the normal polled sections.
 Moving a task into either is an explicit request for an agent pass. The
-checked-in configuration also polls `Approved - Waiting On Dependencies`, but
-only for `factory:auto-to-pr` dependency reconciliation. Only trusted project
-members should be able to move tasks into the two normal work sections.
+checked-in configuration polls `Approved - Waiting On Dependencies` for
+autonomous dependency reconciliation. A manual dependent remains there until a
+human verifies its predecessor PR was merged and moves it to `Ready To
+Implement`. Only trusted project members should be able to move tasks into the
+two normal work sections.
 
-The triage workflow moves a claimed task to `Creating Spec`. For
-`factory:manual`, a complete specification goes to `Awaiting Approval`, and a
-human moves it to `Ready To Implement`. For `factory:auto-to-pr`, Flashy
-Factory reads native Asana dependencies: unblocked work goes to `Ready To
-Implement`, incomplete blockers go to `Approved - Waiting On Dependencies`,
-and ambiguous or unsafe work goes to `Needs Decision`. Sections—not an Epic
-custom field—remain the visual source of truth. The implementation workflow
+The triage workflow moves a claimed task to `Creating Spec`, then every complete
+specification goes to `Awaiting Approval`. A human reviews advisory dependency
+suggestions and confirms, rejects, or corrects them. Only the confirmed native
+links are applied: independent work goes to `Ready To Implement`, and a task
+with an incomplete confirmed blocker goes to `Approved - Waiting On
+Dependencies`. Ambiguous or unsafe work goes to `Needs Decision`. Sections—not
+an Epic custom field—remain the visual source of truth. The implementation workflow
 claims eligible work by moving it to `Implementing`, then moves a green
 pull-request handoff to `Reviewing`. Humans remain responsible for merge and
 `Done`.
@@ -40,8 +42,8 @@ While an autonomous task is waiting, its dedicated reconciliation trigger
 re-reads the graph on every poll. Only a changed dependency graph or completion
 revision creates another reconciliation run. A final completed blocker releases
 the task to `Ready To Implement`; any remaining incomplete blocker leaves it
-waiting. Manual tasks are never polled or revalidated by this reconciliation
-trigger.
+waiting. A manual dependent uses the explicit human post-merge release instead,
+so it cannot be released solely because Asana marks a predecessor completed.
 
 ## Type tags
 
