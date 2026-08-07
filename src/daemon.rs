@@ -4884,6 +4884,7 @@ mod tests {
     struct BlockingRecordingRuntime {
         directories: Mutex<Vec<PathBuf>>,
         entered: AtomicUsize,
+        entered_notify: Arc<Notify>,
         release: Arc<tokio::sync::Semaphore>,
     }
 
@@ -4958,6 +4959,7 @@ mod tests {
                 .unwrap()
                 .push(working_directory.to_owned());
             self.entered.fetch_add(1, Ordering::SeqCst);
+            self.entered_notify.notify_one();
             self.release.acquire().await.unwrap().forget();
             Ok(ExecutionResult {
                 status: std::process::ExitStatus::from_raw(0),
@@ -5080,6 +5082,7 @@ mod tests {
         let runtime = Arc::new(BlockingRecordingRuntime {
             directories: Mutex::new(Vec::new()),
             entered: AtomicUsize::new(0),
+            entered_notify: Arc::new(Notify::new()),
             release: Arc::new(tokio::sync::Semaphore::new(0)),
         });
         let runtime_trait: Arc<dyn AgentRuntime> = runtime.clone();
@@ -5121,8 +5124,12 @@ mod tests {
         .await
         .unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while runtime.entered.load(Ordering::SeqCst) != 2 {
-                tokio::task::yield_now().await;
+            loop {
+                let notified = runtime.entered_notify.notified();
+                if runtime.entered.load(Ordering::SeqCst) == 2 {
+                    break;
+                }
+                notified.await;
             }
         })
         .await
