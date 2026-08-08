@@ -59,14 +59,6 @@ workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
 agent_profile = "implementation"
 
-[trigger.classify-tickets]
-type = "schedule"
-schedule = "0 8 * * *"
-timezone = "Europe/London"
-workflow = ".flashy-factory/workflows/classify-tickets.md"
-timeout = "2h"
-agent_profile = "specification"
-
 [trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
