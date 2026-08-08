@@ -175,6 +175,10 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         fs::read_to_string(fixture.workflows().join("bug-finder.md")).unwrap(),
         include_str!("../.flashy-factory/workflows/bug-finder.md")
     );
+    let triage = fs::read_to_string(fixture.workflows().join("triage.md")).unwrap();
+    assert!(triage.contains("Asana `Priority`\ncustom field"));
+    assert!(triage.contains("exactly one of `bug`, `enhancement`, or"));
+    assert!(!triage.contains("and one of `P0`, `P1`, `P2`, or `P3`"));
     let source = fixture.repository.join(".flashy-factory/sources/asana");
     assert_eq!(
         fs::read_to_string(&source).unwrap(),

@@ -817,7 +817,8 @@ def task_in_project(
         fields = (
             f"{fields},notes,completed,modified_at,permalink_url,assignee.name,"
             "created_by.name,tags.gid,tags.name,memberships.section.gid,"
-            "memberships.section.name"
+            "memberships.section.name,custom_fields.gid,custom_fields.name,"
+            "custom_fields.display_value"
         )
     if include_dependencies:
         fields = f"{fields},dependencies.gid"

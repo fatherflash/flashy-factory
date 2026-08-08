@@ -4,8 +4,8 @@ Flashy Factory uses three independent dimensions in the repository's Asana
 project:
 
 - the **section** records lifecycle and authorizes workflow runs;
-- one **type tag** classifies the work;
-- one **priority tag** ranks accepted work.
+- one **type tag** classifies the work; and
+- the Asana **Priority** custom field ranks accepted work.
 
 ## Lifecycle sections
 
@@ -59,23 +59,17 @@ Features are enhancements. Suspected vulnerabilities follow
 [SECURITY.md](../SECURITY.md) and should not expose sensitive details through a
 public tag or task.
 
-## Priority tags
+## Priority field
 
-Every actionable task should have exactly one:
+Every actionable task should have a value in Asana's `Priority` custom field.
+Use the project's configured values, such as High, Medium, or Low. Priority
+reflects impact and urgency, not implementation size. Factory workflows
+preserve that field and do not add, remove, or require `P0`, `P1`, `P2`, or
+`P3` tags.
 
-| Tag | Meaning |
-| --- | --- |
-| `P0` | Active incident, severe exposure, data loss, or broadly unusable product. |
-| `P1` | Important correctness, security, or reliability work that should be next. |
-| `P2` | Meaningful planned work. |
-| `P3` | Valid low-impact or opportunistic work. |
-
-Priority reflects impact and urgency, not implementation size. Leave it unset
-for work that should be rejected.
-
-The scheduled classifier validates existing tags, removes conflicting values,
-and applies only classification changes. It does not create tags, edit task
-content, move sections, or complete tasks.
+The scheduled classifier validates type tags and applies only type-tag
+classification changes. It does not create tags, edit task content, move
+sections, complete tasks, or change the Priority field.
 
 ## Compatibility note
 

@@ -27,6 +27,7 @@ criteria, and verification plan. Create exactly one Asana task:
   --notes-file /tmp/asana-bug.md
 ```
 
-Apply the existing `bug` tag and an evidence-based priority tag. Do not create
-missing tags. If no defensible bug is found, make no external changes and
-summarize the areas inspected and checks run.
+Apply the existing `bug` tag. Do not create missing tags. Preserve the task's
+existing Asana `Priority` custom field; do not add a `P0`, `P1`, `P2`, or `P3`
+tag. If no defensible bug is found, make no external changes and summarize the
+areas inspected and checks run.

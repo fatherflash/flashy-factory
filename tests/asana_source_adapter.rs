@@ -1307,7 +1307,7 @@ fn asana_client_get_includes_bounded_task_comments() {
     let (api_base, server) = serve(vec![
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-42","name":"Fix it","notes":"Acceptance criteria","memberships":[{"project":{"gid":"project-1","name":"Flashy Factory"},"section":{"gid":"ready","name":"Ready To Implement"}}]}}"#,
+            body: r#"{"data":{"gid":"task-42","name":"Fix it","notes":"Acceptance criteria","custom_fields":[{"gid":"priority","name":"Priority","display_value":"High"}],"memberships":[{"project":{"gid":"project-1","name":"Flashy Factory"},"section":{"gid":"ready","name":"Ready To Implement"}}]}}"#,
             headers: &[],
         },
         Response {
@@ -1324,10 +1324,12 @@ fn asana_client_get_includes_bounded_task_comments() {
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["data"]["gid"], "task-42");
+    assert_eq!(value["data"]["custom_fields"][0]["display_value"], "High");
     assert_eq!(value["stories"].as_array().unwrap().len(), 1);
     assert_eq!(value["stories"][0]["text"], "Human clarification");
     let requests = server.join().unwrap();
     assert!(requests[0].head.starts_with("GET /tasks/task-42?"));
+    assert!(requests[0].head.contains("custom_fields.name"));
     assert!(requests[1].head.starts_with("GET /tasks/task-42/stories?"));
 }
 
