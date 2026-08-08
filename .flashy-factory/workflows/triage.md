@@ -43,8 +43,9 @@ Write the complete notes to a temporary Markdown file, then run:
 ```
 
 Classify actionable work with exactly one of `bug`, `enhancement`, or
-`documentation`, and one of `P0`, `P1`, `P2`, or `P3`, using the client's
-`add-tag` and `remove-tag` commands. Do not create missing tags.
+`documentation`, using the client's `add-tag` and `remove-tag` commands. Do
+not create missing tags. Read and preserve the task's existing Asana `Priority`
+custom field; do not add, remove, or require `P0`, `P1`, `P2`, or `P3` tags.
 
 ## Route the completed specification
 
