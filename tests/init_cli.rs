@@ -143,6 +143,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(config.contains("[trigger.reconcile-dependencies]"));
     assert!(config.contains("[trigger.triage-manual]"));
     assert!(config.contains("[trigger.implement-manual]"));
+    assert!(!config.contains("[trigger.classify-tickets]"));
     assert!(config.contains("factory:auto-to-pr"));
     assert!(config.contains("factory:manual"));
     assert!(config.contains("[trigger.bug-finder]"));
@@ -159,6 +160,7 @@ fn init_creates_complete_repository_factory_without_overwriting() {
     assert!(fixture.workflows().is_dir());
     assert!(!fixture.repository.join(".factory").exists());
     assert_eq!(fs::read_dir(fixture.workflows()).unwrap().count(), 4);
+    assert!(!fixture.workflows().join("classify-tickets.md").exists());
     assert_eq!(
         fs::read_to_string(fixture.workflows().join("triage.md")).unwrap(),
         include_str!("../.flashy-factory/workflows/triage.md")
@@ -176,8 +178,9 @@ fn init_creates_complete_repository_factory_without_overwriting() {
         include_str!("../.flashy-factory/workflows/bug-finder.md")
     );
     let triage = fs::read_to_string(fixture.workflows().join("triage.md")).unwrap();
-    assert!(triage.contains("Asana `Priority`\ncustom field"));
-    assert!(triage.contains("exactly one of `bug`, `enhancement`, or"));
+    assert!(triage.contains("Asana `Work Type` and `Priority` custom\nfields"));
+    assert!(triage.contains("Only `factory:manual` and `factory:auto-to-pr` tags authorize"));
+    assert!(!triage.contains("using the client's `add-tag` and `remove-tag` commands"));
     assert!(!triage.contains("and one of `P0`, `P1`, `P2`, or `P3`"));
     let source = fixture.repository.join(".flashy-factory/sources/asana");
     assert_eq!(

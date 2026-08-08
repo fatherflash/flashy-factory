@@ -216,10 +216,8 @@ input so content is not mangled by shell quoting:
 .flashy-factory/clients/asana update TASK_GID --notes-file /tmp/task.md
 .flashy-factory/clients/asana comment TASK_GID --text-file /tmp/comment.md
 
-# Move and classify
+# Move a task
 .flashy-factory/clients/asana move TASK_GID --section "Reviewing"
-.flashy-factory/clients/asana add-tag TASK_GID --tag "bug"
-.flashy-factory/clients/asana remove-tag TASK_GID --tag "enhancement"
 ```
 
 `get` returns the task plus up to 200 human comment stories. Every get, update,
@@ -229,6 +227,23 @@ token. `create` and `list` use `ASANA_PROJECT_GID` unless `--project` is
 provided. Tag operations resolve existing tags in `ASANA_WORKSPACE_GID`.
 Missing or duplicate section/tag names are hard failures; the client does not
 guess.
+
+`factory:manual` and `factory:auto-to-pr` are the only tags Factory uses for
+workflow authorization. Work classification belongs in the existing Asana
+`Work Type` custom field; Factory workflows preserve it and never require or
+manage `bug`, `enhancement`, or `documentation` tags.
+
+## Upgrade from legacy type-tag classification
+
+Older Factory checkouts may contain a scheduled `classify-tickets` workflow
+that manages `bug`, `enhancement`, and `documentation` tags. Factory preserves
+existing repository configuration and workflows during `factory init`, so it
+does not remove that legacy scheduler automatically. To adopt custom-field
+classification, an operator should remove the `[trigger.classify-tickets]`
+block from `.flashy-factory/config.toml` and remove
+`.flashy-factory/workflows/classify-tickets.md`, then run `factory validate`.
+This is an opt-in configuration migration: do not delete the task's existing
+Asana `Work Type` field or its `factory:*` authorization tag.
 
 `dependency-state` follows native dependency edges, verifies that every task is
 accessible and belongs only to `ASANA_PROJECT_GID`, rejects malformed or cyclic

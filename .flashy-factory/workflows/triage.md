@@ -42,10 +42,12 @@ Write the complete notes to a temporary Markdown file, then run:
 .flashy-factory/clients/asana update <task-gid> --notes-file /tmp/asana-task.md
 ```
 
-Classify actionable work with exactly one of `bug`, `enhancement`, or
-`documentation`, using the client's `add-tag` and `remove-tag` commands. Do
-not create missing tags. Read and preserve the task's existing Asana `Priority`
-custom field; do not add, remove, or require `P0`, `P1`, `P2`, or `P3` tags.
+Read and preserve the task's existing Asana `Work Type` and `Priority` custom
+fields. `Work Type` classifies the work (for example, bug, enhancement, or
+documentation); it is not a tag or routing input. Do not add, remove, require,
+or validate `bug`, `enhancement`, `documentation`, `P0`, `P1`, `P2`, or `P3`
+tags. Only `factory:manual` and `factory:auto-to-pr` tags authorize Factory
+workflows.
 
 ## Route the completed specification
 

@@ -4,7 +4,7 @@ Flashy Factory uses three independent dimensions in the repository's Asana
 project:
 
 - the **section** records lifecycle and authorizes workflow runs;
-- one **type tag** classifies the work; and
+- the Asana **Work Type** custom field classifies the work; and
 - the Asana **Priority** custom field ranks accepted work.
 
 ## Lifecycle sections
@@ -45,11 +45,11 @@ the task to `Ready To Implement`; any remaining incomplete blocker leaves it
 waiting. A manual dependent uses the explicit human post-merge release instead,
 so it cannot be released solely because Asana marks a predecessor completed.
 
-## Type tags
+## Work Type field
 
-Every actionable task should have exactly one:
+Every actionable task should have a value in Asana's `Work Type` custom field:
 
-| Tag | Meaning |
+| Value | Meaning |
 | --- | --- |
 | `bug` | Existing behavior is incorrect. |
 | `enhancement` | New capability or improved behavior. |
@@ -67,12 +67,13 @@ reflects impact and urgency, not implementation size. Factory workflows
 preserve that field and do not add, remove, or require `P0`, `P1`, `P2`, or
 `P3` tags.
 
-The scheduled classifier validates type tags and applies only type-tag
-classification changes. It does not create tags, edit task content, move
-sections, complete tasks, or change the Priority field.
+Factory does not create, add, remove, require, or validate these values as
+tags. The only tags that authorize a Factory workflow are `factory:manual` and
+`factory:auto-to-pr`; they are delivery-policy tags, not work classification.
 
 ## Compatibility note
 
 `.flashy-factory/tickets.toml` is retained from the upstream GitHub Project workflow
 for existing installations and examples. The Asana workflows do not read it;
-the Asana project sections and tags described here are the source of truth.
+the Asana project sections, custom fields, and authorization tags described
+here are the source of truth.
