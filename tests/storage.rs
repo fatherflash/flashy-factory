@@ -1966,6 +1966,57 @@ fn pull_request_event_consumption_is_durable_and_idempotent() {
 }
 
 #[test]
+fn successful_manual_implementation_handoff_records_a_pull_request_association() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(&temp.path().join("ledger.db")).unwrap();
+    let task = ledger
+        .enqueue_with_payload(
+            &TaskIdentity::ticket(
+                "acme/repository",
+                "implement-manual",
+                "asana-42",
+                "revision",
+            )
+            .unwrap(),
+            Some(r#"{"labels":["factory:manual"]}"#),
+        )
+        .unwrap()
+        .task;
+    ledger.claim_next().unwrap().unwrap();
+    let run = ledger.start_run(task.id, "codex").unwrap();
+    ledger
+        .observe_run(
+            run.id,
+            None,
+            None,
+            None,
+            Some("https://github.com/acme/repository/pull/42"),
+            None,
+        )
+        .unwrap();
+    ledger
+        .finish_run_and_task(run.id, RunOutcome::Succeeded, None, None, None)
+        .unwrap();
+
+    ledger
+        .associate_successful_implementation_handoff(
+            run.id,
+            "acme/repository",
+            RepositoryProvider::GitHub,
+        )
+        .unwrap();
+
+    assert_eq!(
+        ledger.pull_request_associations("acme/repository").unwrap(),
+        vec![factory::storage::PullRequestAssociation {
+            repository: "acme/repository".into(),
+            task_gid: "asana-42".into(),
+            pull_request: "https://github.com/acme/repository/pull/42".into(),
+        }]
+    );
+}
+
+#[test]
 fn pull_request_event_claim_is_exclusive_across_ledger_connections() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("ledger.db");

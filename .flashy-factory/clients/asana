@@ -1850,7 +1850,15 @@ def reconcile_pull_request(client: AsanaClient, args: argparse.Namespace) -> dic
     lane = authorization(task)
     sections = task_sections(task)
     if lane == "manual":
-        return {"status": "manual_untouched", "released": []}
+        if args.outcome != "merged":
+            return {"status": "manual_untouched", "released": []}
+        if sections != {"Done"}:
+            move_task_to_resolved_section(
+                client, gid, resolve_section(client, project_gid, "Done")
+            )
+        if not task["completed"]:
+            client.request("PUT", f"/tasks/{encoded_gid(gid)}", data={"completed": True})
+        return {"status": "merged", "released": []}
     if task["completed"] and args.outcome != "merged":
         return {"status": "completed_untouched", "released": []}
     if lane != "autonomous":

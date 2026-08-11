@@ -164,20 +164,23 @@ the predecessor's PR is human-merged.
 
 ## Trusted pull-request reconciliation
 
-An autonomous implementation handoff records a link only when the runtime
-observes a canonical GitHub pull-request URL for the configured repository.
+An implementation handoff records a link only when the runtime observes a
+canonical GitHub pull-request URL for the configured repository. This applies
+to both `factory:auto-to-pr` and `factory:manual` tasks.
 Comments and task descriptions are never association inputs. Every 60 seconds,
 the daemon observes those linked PRs with authenticated `gh`; this polling does
 not occupy an implementation worker slot. It records a durable fingerprint of
 the PR state, head SHA, and reviews, so an unchanged response is consumed once
 across polls and daemon restarts.
 
-For a merged autonomous PR, the daemon re-reads Asana, moves the linked task to
-`Done`, completes it, and evaluates direct native dependents in the same pass.
+For a merged PR, the daemon re-reads Asana, moves the linked task to `Done`,
+and completes it. For an autonomous PR, it also evaluates direct native
+dependents in the same pass.
 An eligible autonomous dependent moves to `Ready To Implement`. A closed but
 unmerged PR moves only its linked task to `Needs Decision`. Missing,
 cross-project, contradictory, inaccessible, or otherwise unsafe observations
-fail closed to `Needs Decision`; `factory:manual` work remains untouched. The
+fail closed to `Needs Decision` for autonomous work. For manual work, only a
+merged PR changes the task; other observations remain untouched. The
 released dependent is reauthorized before execution, then its managed worktree
 is created from a fresh fetch of the default branch, including the predecessor's
 human-merged change rather than the pre-merge base.
