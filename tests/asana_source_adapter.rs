@@ -654,13 +654,30 @@ fn dependency_state_fails_closed_for_malformed_cyclic_and_cross_project_graphs()
 }
 
 #[test]
-fn terminal_pr_reconciliation_preserves_manual_and_routes_contradictory_tasks() {
+fn terminal_pr_reconciliation_completes_merged_manual_and_routes_contradictory_tasks() {
     let parent = r#"{"data":{"gid":"task-42","completed":false,"tags":[{"name":"factory:manual"}],"memberships":[{"project":{"gid":"project-1"},"section":{"name":"Approved - Waiting On Dependencies"}}]}}"#;
-    let (api_base, server) = serve(vec![Response {
-        status: "200 OK",
-        body: parent,
-        headers: &[],
-    }]);
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: parent,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"done","name":"Done"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+    ]);
     let manual = run_client(
         &api_base,
         &["reconcile-pr", "task-42", "--outcome", "merged"],
@@ -669,6 +686,36 @@ fn terminal_pr_reconciliation_preserves_manual_and_routes_contradictory_tasks() 
         manual.status.success(),
         "{}",
         String::from_utf8_lossy(&manual.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&manual.stdout).trim(),
+        r#"{"status":"merged","released":[]}"#
+    );
+    let requests = server.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("POST /sections/done/addTask"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.head.starts_with("PUT /tasks/task-42"))
+    );
+
+    let (api_base, server) = serve(vec![Response {
+        status: "200 OK",
+        body: parent,
+        headers: &[],
+    }]);
+    let closed_manual = run_client(
+        &api_base,
+        &["reconcile-pr", "task-42", "--outcome", "closed"],
+    );
+    assert!(closed_manual.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&closed_manual.stdout).trim(),
+        r#"{"status":"manual_untouched","released":[]}"#
     );
     assert_eq!(server.join().unwrap().len(), 1);
 

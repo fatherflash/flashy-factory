@@ -763,46 +763,20 @@ impl Ledger {
         let association = self
             .connection
             .query_row(
-                "SELECT tasks.source_item, runs.pull_request, tasks.payload
+                "SELECT tasks.source_item, runs.pull_request
              FROM runs JOIN tasks ON tasks.id = runs.task_id
              WHERE runs.id = ?1 AND runs.outcome = 'succeeded'
                AND runs.repository = ?2 AND tasks.repository = ?2
-               AND tasks.workflow = 'implement' AND runs.workflow = 'implement'
+               AND tasks.workflow IN ('implement', 'implement-manual')
+               AND runs.workflow IN ('implement', 'implement-manual')
                AND tasks.source_item IS NOT NULL AND runs.pull_request IS NOT NULL",
                 params![run_id, repository],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
             .context("failed to resolve implementation handoff")?;
-        if let Some((task_gid, pull_request, payload)) = association {
-            let labels = payload
-                .as_deref()
-                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
-                .and_then(|value| {
-                    value
-                        .get("labels")
-                        .and_then(serde_json::Value::as_array)
-                        .cloned()
-                })
-                .unwrap_or_default();
-            let names = labels
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect::<Vec<_>>();
-            if names.contains(&"factory:auto-to-pr") && !names.contains(&"factory:manual") {
-                self.record_pull_request_association(
-                    provider,
-                    repository,
-                    &task_gid,
-                    &pull_request,
-                )?;
-            }
+        if let Some((task_gid, pull_request)) = association {
+            self.record_pull_request_association(provider, repository, &task_gid, &pull_request)?;
         }
         Ok(())
     }
