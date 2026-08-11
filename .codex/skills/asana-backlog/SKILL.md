@@ -1,40 +1,52 @@
 ---
 name: asana-backlog
-description: Create one or more Asana backlog tasks with required project fields, an explicit manual or autonomous delivery policy, and verified native dependencies.
+description: Create one or more Asana backlog tasks only after collecting and applying the project, priority, story points, work type, and manual-or-autonomous authorization tag, with verified native dependencies.
 ---
 
 # Asana Backlog
 
-Create tasks once the required routing, estimation, delivery, and dependency
-details are known. Support one task or a batch. Do not show a preview unless the
-user explicitly asks for one.
+Create tasks only after the required routing, estimation, classification,
+authorization, and dependency details are known. Support one task or a batch.
+Do not show a preview unless the user explicitly asks for one.
 
 ## Gather only what is missing
 
-Extract task names and descriptions from the request. For every task, require:
+Extract task names and descriptions from the request. For every task, require
+these values before preparing a manifest or making an Asana mutation:
 
 - **Project**: resolve a named project and its exact `Backlog` section. Do not
   guess or create a missing section.
 - **Priority**: High, Medium, or Low.
 - **Story Points**: 1, 3, or 5.
 - **Work Type**: bug, enhancement, or documentation.
+- **Authorization Tag**: `factory:manual` for manual work or
+  `factory:auto-to-pr` for autonomous delivery to pull-request review.
 
-Resolve the project custom-field and enum-option GIDs from live Asana metadata.
-Never invent IDs. Ask one compact question containing only missing choices.
-Do not ask about owner, dates, or extra metadata unless requested.
+The project and authorization tag may be shared by the batch. Priority, story
+points, and work type may be shared only when the user explicitly applies the
+same value to every task; otherwise collect them per task. Resolve the project,
+Backlog section, project custom-field GIDs, enum-option GIDs, and tag GID from
+live Asana metadata. Never invent IDs.
+
+Ask one compact question containing only the missing required values. Do not
+create a task with a missing value, substitute a default, or leave a required
+field or tag unset. Do not ask about owner, dates, or extra metadata unless
+requested.
 
 ## Resolve delivery policy
 
-Every invocation must resolve one of:
+Every invocation must resolve the authorization tag to one of:
 
 - `backlog_only`: select when the user asks to add, capture, or backlog work
   without authorizing implementation.
 - `autonomous_to_pr`: select when the user explicitly asks to implement,
   deliver, or run autonomously to pull-request review.
 
-When the request is unclear, ask once. If no answer is available, use the safe
-default `backlog_only`. Never infer authorization merely because the tasks are
-detailed.
+When the request is unclear, ask once whether the work is manual or
+autonomous. Do not default to `backlog_only`, and never infer authorization
+merely because the tasks are detailed. Map the selected tag to the manifest
+policy: `factory:manual` -> `backlog_only`; `factory:auto-to-pr` ->
+`autonomous_to_pr`.
 
 ## Resolve dependencies
 
@@ -68,7 +80,10 @@ manifest or command argument.
 
 Choose a stable, non-secret `batch_creation_id` that is unique across projects
 for the configured Asana app, and reuse it unchanged for every retry of the
-logical batch. Write a temporary JSON manifest with this shape:
+logical batch. Write a temporary JSON manifest only after every task has a
+project-backed priority, story-points, and work-type assignment and the
+selected authorization tag. Include the three custom-field assignments in each
+task so the create operation applies them with the task's project membership:
 
 ```json
 {
@@ -108,10 +123,13 @@ For `independent` or `listed_chain`, the `dependencies` value may be that exact
 string. Task references are local manifest identifiers, not predicted Asana
 GIDs.
 
-Run:
+Before running the command, confirm its batch manifest supports setting and
+reading back the three `custom_fields` values. If it does not, stop without
+creating a task and report that the batch client must be updated; never create
+a partially classified task. Run with the selected project explicitly:
 
 ```sh
-.flashy-factory/clients/asana batch-create --input /path/to/batch.json
+.flashy-factory/clients/asana batch-create --project <selected-project-gid> --input /path/to/batch.json
 ```
 
 The command owns the mutation sequence:
@@ -129,9 +147,10 @@ The command owns the mutation sequence:
    reserving a batch-level identity on the canonical first task, binding the
    canonical policy/task/dependency definition, and reusing only exact
    project/content matches;
-5. create every missing task in `Backlog` and capture returned GIDs; if a create
-   response is lost, use bounded, backoff-aware external-identity lookups
-   without retrying the create request;
+5. create every missing task in the selected project's `Backlog`, with its
+   priority, story-points, and work-type custom-field values, and capture
+   returned GIDs; if a create response is lost, use bounded, backoff-aware
+   external-identity lookups without retrying the create request;
 6. only when every task exists, add native Asana dependency edges;
 7. read dependent tasks back and verify every requested edge;
 8. remove the opposite authorization tag and apply the selected existing tag
@@ -139,7 +158,8 @@ The command owns the mutation sequence:
 9. move verified autonomous components to `Ready For Spec` while leaving
    manual components in `Backlog`; and
 10. read every component back and require exactly the selected authorization
-   tag and expected section before reporting success.
+   tag, expected section, and requested priority, story-points, and work-type
+   field values before reporting success.
 
 The exact tags are `factory:auto-to-pr` and `factory:manual`. The command must
 resolve them from the configured workspace and fail if the selected tag is
@@ -170,9 +190,10 @@ contains a JSON report.
   mismatched content, policy, dependency graph, task set, another project, or
   more than one total project membership.
 
-Report created tasks, their GIDs, delivery policy, verified edges, exact
-missing edges, component status, and failures. Do not claim the autonomous
-batch is ready when the command returns nonzero.
+Report created tasks, their GIDs, project, priority, story points, work type,
+authorization tag, delivery policy, verified edges, exact missing edges,
+component status, and failures. Do not claim the autonomous batch is ready
+when the command returns nonzero.
 
 ## Polaris Internal Portal defaults
 
