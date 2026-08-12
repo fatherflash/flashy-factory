@@ -135,7 +135,8 @@ a partially classified task. Run with the selected project explicitly:
 The command owns the mutation sequence:
 
 1. verify the OAuth token's app identity, remaining lifetime, and the available
-   `tasks:read`, `tasks:write`, `projects:read`, and `tags:read` scopes before
+   `tasks:read`, `tasks:write`, `projects:read`, `tags:read`, and
+   `custom_fields:read` scopes before
    project access; do not request Full Permissions;
 2. read the configured `ASANA_BACKLOG_SECTION_WITNESS_TASK_GID` and require an
    exact membership pairing `ASANA_PROJECT_GID` with
