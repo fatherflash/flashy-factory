@@ -54,6 +54,175 @@ The unscoped ledgers `~/.flashy-factory/factory.sqlite3` and legacy
 owned by an old process could overlap. These guards run when `factory run`
 starts; inspection and cleanup commands remain available.
 
+## Persistent Linux service with systemd
+
+Running `factory run` in an SSH terminal is temporary. It ends when the process
+receives a signal, the terminal closes, or the session is otherwise terminated.
+For one repository that should remain supervised after logout and reboot, use a
+dedicated systemd system service.
+
+This is a deployment layer around Flashy Factory. `factory init` does not
+install it. Replace every angle-bracket placeholder below, use a short
+filesystem-safe service name, and repeat the setup for each independently
+managed repository.
+
+### 1. Verify the service account
+
+Authenticate the repository host CLI and Codex as the same unprivileged Unix
+account named by `User=` in the service:
+
+```sh
+gh auth status       # GitHub repository
+glab auth status     # GitLab.com repository
+codex login status
+```
+
+Use absolute executable and repository paths in the service. Confirm the
+primary checkout is clean and that its `origin` still matches the identity in
+`.flashy-factory/config.toml`.
+
+### 2. Encrypt the Asana PAT
+
+Create the system credential directory once, then encrypt a dedicated PAT. The
+credential name passed to `systemd-creds` must match `LoadCredentialEncrypted`
+in the unit:
+
+```bash
+sudo install -d -m 0700 /etc/credstore.encrypted
+read -rsp "Asana PAT: " FACTORY_ASANA_PAT
+printf '\n'
+printf '%s' "$FACTORY_ASANA_PAT" | sudo systemd-creds encrypt \
+  --name=asana_pat \
+  - \
+  /etc/credstore.encrypted/factory-<service-name>-asana-pat.cred
+unset FACTORY_ASANA_PAT
+```
+
+The silent prompt keeps the PAT out of the command and shell history. On a host
+without encrypted storage, systemd may warn that its host
+credential key is not on encrypted media. Host-key encryption still avoids a
+plaintext credential file, but full-disk encryption provides stronger
+protection against offline physical access.
+
+### 3. Install a credential-loading wrapper
+
+`EnvironmentFile=` is not a secret store. Use a small root-owned wrapper to
+read systemd's per-service credential file and export it only to Factory:
+
+```sh
+#!/bin/sh
+set -eu
+
+credential="${CREDENTIALS_DIRECTORY:?}/asana_pat"
+ASANA_ACCESS_TOKEN="$(tr -d '\r\n' <"$credential")"
+export ASANA_ACCESS_TOKEN
+
+exec /absolute/path/to/factory run \
+  --config /absolute/path/to/repository/.flashy-factory/config.toml
+```
+
+Install it as `/usr/local/libexec/factory-<service-name>-run`, owned by root and
+mode `0755`. It must contain no token value. The PAT will be decrypted into a
+private, read-only credential directory only for the service invocation.
+
+### 4. Install the service unit
+
+Create `/etc/systemd/system/factory-<service-name>.service`:
+
+```ini
+[Unit]
+Description=Flashy Factory for <project-name>
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=<unix-user>
+Group=<unix-group>
+WorkingDirectory=/absolute/path/to/repository
+Environment=PATH=/absolute/path/to/factory-bin:/absolute/path/to/provider-cli-bin:/absolute/path/to/codex-bin:/usr/local/bin:/usr/bin:/bin
+Environment=ASANA_PROJECT_GID=<project-gid>
+Environment=ASANA_WORKSPACE_GID=<workspace-gid>
+LoadCredentialEncrypted=asana_pat:/etc/credstore.encrypted/factory-<service-name>-asana-pat.cred
+ExecStart=/usr/local/libexec/factory-<service-name>-run
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Project and workspace GIDs are identifiers, not secrets. Keep the PAT in the
+encrypted credential, never in `Environment=`. If the CLI installations live
+under a version manager, pin their current absolute directories in `PATH` and
+update the unit when those paths change.
+
+### 5. Validate once, then enable continuous operation
+
+First run `factory validate` and `factory run --once` with the same repository,
+IDs, PATH, and PAT. The one-shot poll records eligible work but launches no
+worker. Then install and start the unit:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now factory-<service-name>.service
+systemctl is-enabled factory-<service-name>.service
+systemctl is-active factory-<service-name>.service
+journalctl -u factory-<service-name>.service -f
+```
+
+`enabled` means the service is configured to start at boot. `active` means it
+is running now. Once both are true, normal SSH logins do not require `factory
+init`, `factory run`, or a reset. Do not also start an interactive daemon for
+the same repository.
+
+### 6. Operate and maintain it
+
+```sh
+# Stop until manually started or the machine reboots:
+sudo systemctl stop factory-<service-name>.service
+
+# Start or restart it:
+sudo systemctl start factory-<service-name>.service
+sudo systemctl restart factory-<service-name>.service
+
+# Stop now and disable start at boot:
+sudo systemctl disable --now factory-<service-name>.service
+
+# Restore start at boot:
+sudo systemctl enable --now factory-<service-name>.service
+```
+
+Restart after editing repository configuration, workflows, the unit, wrapper,
+or environment because the daemon loads its configuration at startup. Run
+`systemctl daemon-reload` first after changing the unit itself.
+
+The service survives SSH logout, starts after reboot, and restarts ordinary
+process failures. It cannot run while the host is powered off, suspended, or
+offline. Inspect it occasionally and after upgrades. Revoked credentials,
+expired provider or Codex sessions, moved checkouts, changed remote identities,
+Asana board changes, missing version-managed binaries, and repeated startup
+failures still require operator attention. A systemd restart preserves the
+durable ledger, task history, branches, and managed workspaces; it is not a
+Factory reset.
+
+Keep OAuth refresh credentials for verified backlog creation in a separate
+oneshot service or external token manager. Do not load the OAuth client secret
+or refresh token into the Factory daemon. See the
+[Asana guide](asana.md#use-narrow-oauth-for-verified-backlog-batches).
+
+For several repositories backed by distinct Asana projects, install one clearly
+named service per repository by default. The generated Asana sources read
+project and workspace GIDs from the supervisor's process environment, while a
+fleet has no per-repository environment mapping. Use one
+[fleet](#fleet-operation) only when its repositories intentionally share that
+Asana environment or each repository has a custom source wrapper that injects
+its own IDs and credentials. Never run a per-repository service and a fleet for
+the same checkout.
+
 ## Repository worker concurrency
 
 New repository-owned configurations start two workers at a time:

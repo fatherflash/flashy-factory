@@ -185,6 +185,43 @@ or unsafe work moves to `Needs Decision`.
 Section names are not built in. If your project uses different names, update
 the configuration and workflows together.
 
+### Understand the per-project lifecycle
+
+`factory init` configures one repository; it does not install a background
+service or configure an Asana project. Treat each managed project as four
+connected pieces:
+
+```text
+repository checkout
+    ↕
+.flashy-factory configuration and workflows
+    ↕
+Asana project, sections, fields, and authorization tags
+    ↕
+one long-running service for this repository
+```
+
+For every new repository:
+
+1. Clone the primary checkout and authenticate `gh` or `glab` plus `codex` as
+   the Unix account that will run workers.
+2. Run `factory init --check`, then `factory init`, from that checkout.
+3. Create or select its Asana project and collect the non-secret workspace,
+   project, section, custom-field, option, tag, and witness-task GIDs.
+4. Edit `.flashy-factory/config.toml` and its Markdown workflows together.
+5. Inject the Asana PAT from an OS or service-manager credential store.
+6. Run `factory validate`, `factory workflows`, and `factory run --once`.
+7. Run `factory run` under a service manager if it should keep working after
+   logout and reboot.
+
+Repeat these steps for each project. Do not run `factory init` on every SSH
+login, and do not start a second interactive `factory run` when a service is
+already supervising the same repository. The [Asana guide](docs/asana.md)
+contains the board, field, credential requirements, OAuth boundary, and GID
+checklist. The [operations
+guide](docs/operations.md#persistent-linux-service-with-systemd) contains a
+reusable systemd deployment.
+
 ### Agent profiles
 
 Repository-owned profiles choose the Codex model, reasoning effort, and service
@@ -253,8 +290,17 @@ factory run
 ```
 
 Flashy Factory now polls the configured Asana project and launches a worker
-only when a task matches a configured trigger. Keep this process running under
-your preferred service manager for a persistent deployment.
+only when a task matches a configured trigger. An interactive process stops
+when its terminal or SSH session ends. For an always-on deployment, install it
+under a service manager as described in the
+[systemd walkthrough](docs/operations.md#persistent-linux-service-with-systemd).
+
+An enabled systemd service starts after reboot, survives SSH logout, and can
+restart a failed Factory process. It still needs occasional maintenance when
+credentials are revoked, repository paths or remote identities change, the
+Asana board structure changes, or a Factory upgrade changes configuration.
+Restart the service after editing configuration because a running daemon keeps
+its startup snapshot.
 
 ### Develop Flashy Factory
 
@@ -305,7 +351,7 @@ fit behind the same source, trigger, workflow, and worker boundaries later.
 - [Labels and ticket status](docs/labels.md)
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
-- [Asana source and agent client](docs/asana.md)
+- [Asana project, credentials, GIDs, source, and agent client](docs/asana.md)
 - [Jira source adapter](docs/jira.md)
 - [Docker Sandbox development environment](docs/docker-sandbox-template.md)
 - [Contributing](CONTRIBUTING.md)
