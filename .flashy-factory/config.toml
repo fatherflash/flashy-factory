@@ -13,14 +13,14 @@ max_concurrent = 2
 command = [".flashy-factory/sources/asana", "--max-results", "200"]
 
 [agent_profile.specification]
-model = "gpt-5.3-codex"
-reasoning_effort = "high"
-service_tier = "priority"
+model = "gpt-5.6-terra"
+reasoning_effort = "low"
+service_tier = "default"
 
 [agent_profile.implementation]
-model = "gpt-5.3-codex"
-reasoning_effort = "xhigh"
-service_tier = "priority"
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+service_tier = "default"
 
 [trigger.triage]
 type = "source"

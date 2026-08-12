@@ -631,8 +631,8 @@ fn default_config(
     ]));
     document["agent_profile"] = Item::Table(Table::new());
     for (name, model, reasoning_effort, service_tier) in [
-        ("specification", "gpt-5.3-codex", "high", "priority"),
-        ("implementation", "gpt-5.3-codex", "xhigh", "priority"),
+        ("specification", "gpt-5.6-terra", "low", "default"),
+        ("implementation", "gpt-5.6-terra", "medium", "default"),
     ] {
         document["agent_profile"][name] = Item::Table(Table::new());
         document["agent_profile"][name]["model"] = value(model);
