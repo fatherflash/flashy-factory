@@ -20,6 +20,7 @@ Create or choose one project for the repository. The checked-in workflows use
 these exact, case-sensitive section names:
 
 ```text
+Backlog
 Ready For Spec → Creating Spec → Awaiting Approval
                                   ↓ human dependency approval
 Ready To Implement → Implementing → Reviewing → Done
@@ -44,6 +45,78 @@ export ASANA_PROJECT_GID="..."
 export ASANA_WORKSPACE_GID="..."
 ```
 
+### Create the delivery tags and custom fields
+
+Create these existing workspace tags exactly once and add them only as an
+explicit delivery authorization:
+
+```text
+factory:manual
+factory:auto-to-pr
+```
+
+The verified backlog workflow also requires these project custom fields and
+enum options:
+
+| Field | Options |
+| --- | --- |
+| Priority | High, Medium, Low |
+| Story Points | 1, 3, 5 |
+| Work Type | bug, enhancement, documentation |
+
+Names are human-readable classification. The batch manifest uses each custom
+field GID mapped to its selected enum-option GID, so record both kinds of GID.
+Do not replace the `factory:*` authorization tags with a custom field: triggers
+use exact tag names, while classification uses the custom fields.
+
+### Create section witness tasks
+
+Create one harmless, incomplete, untagged witness task in `Backlog` and another
+in `Ready For Spec`. Keep each task in exactly one project and do not move or
+complete it. Give them names that clearly state their operational purpose.
+
+Verified batch creation reads these tasks before writing anything. The
+`backlog_only` policy proves the configured Backlog GID belongs to the expected
+project. The `autonomous_to_pr` policy proves both Backlog and Ready For Spec.
+This prevents a copied or mistyped section GID from routing a batch into another
+project visible to the OAuth identity.
+
+### Collect and verify the non-secret GIDs
+
+Record this per-project inventory outside the repository's committed files:
+
+```text
+ASANA_WORKSPACE_GID
+ASANA_PROJECT_GID
+ASANA_BACKLOG_SECTION_GID
+ASANA_BACKLOG_SECTION_WITNESS_TASK_GID
+ASANA_READY_FOR_SPEC_SECTION_GID
+ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID
+Priority field GID and High/Medium/Low option GIDs
+Story Points field GID and 1/3/5 option GIDs
+Work Type field GID and bug/enhancement/documentation option GIDs
+factory:manual tag GID
+factory:auto-to-pr tag GID
+```
+
+Asana URLs expose useful object GIDs, but a board URL can contain workspace,
+project, and view identifiers together. Do not identify a value only by its
+position in the URL. Confirm it in Asana's UI or with authenticated reads from
+the official API:
+
+```text
+GET /api/1.0/projects/{project_gid}?opt_fields=workspace.gid
+GET /api/1.0/projects/{project_gid}/sections
+GET /api/1.0/workspaces/{workspace_gid}/tags
+GET /api/1.0/tasks/{witness_task_gid}
+GET /api/1.0/projects/{project_gid}/custom_field_settings?opt_fields=custom_field.gid,custom_field.name,custom_field.enum_options.gid,custom_field.enum_options.name
+```
+
+When reading a witness task, verify its membership pairs the expected project
+and section. When reading project custom-field settings, record the custom
+field and enum-option GIDs rather than their display order. GIDs identify
+resources but are not authentication secrets.
+
 ## Authenticate without committing a secret
 
 For a personal setup, create a dedicated, revocable Asana personal access token
@@ -51,8 +124,10 @@ and expose it only to the Flashy Factory process. The personal token supports
 polling and the single-task client commands; verified batch creation has a
 separate OAuth requirement described below.
 
-```sh
-export ASANA_ACCESS_TOKEN="..."
+```bash
+read -rsp "Asana PAT: " ASANA_ACCESS_TOKEN
+printf '\n'
+export ASANA_ACCESS_TOKEN
 ```
 
 The client sends the token only in the `Authorization` header. It accepts only
@@ -69,6 +144,65 @@ worktree worker inherits host environment variables. A Docker worker needs an
 explicit credential injection policy; this repository does not provide one.
 Do not request Asana Full Permissions: a dedicated user with access to this
 project and its tasks is sufficient for the supported client operations.
+
+### Use a PAT for the long-running daemon
+
+The polling daemon and normal single-task client operations use
+`ASANA_ACCESS_TOKEN`. Create a dedicated, revocable PAT from the Asana developer
+console. The PAT inherits everything its Asana user can access; it is not
+project-scoped by the environment variables. Prefer an automation user whose
+workspace and project access is no broader than necessary.
+
+Unset it after interactive validation. For continuous operation, use the
+encrypted systemd credential pattern in the
+[operations guide](operations.md#persistent-linux-service-with-systemd) instead
+of a shell export.
+
+### Use narrow OAuth for verified backlog batches
+
+`batch-create` intentionally rejects PAT authentication. Create an Asana OAuth
+developer app and disable Full Permissions. Allow exactly these scopes:
+
+```text
+tasks:read
+tasks:write
+projects:read
+tags:read
+custom_fields:read
+```
+
+Register a redirect URI controlled by your authorization helper. Complete
+Asana's [authorization-code flow with
+PKCE](https://developers.asana.com/docs/oauth), then keep the client secret and
+long-lived refresh token in a secret manager. Asana access tokens normally last
+one hour, so a local helper or token broker must exchange the refresh token for
+a new access token before expiry and expose only that short-lived token to the
+interactive Codex process.
+
+The Factory daemon does not need the OAuth client secret, OAuth refresh token,
+or OAuth access token. The backlog client does not accept or persist the client
+secret or refresh token. Keeping these two credential paths separate limits
+which long-running process can read each secret.
+
+Before task creation, the environment used to launch Codex must contain:
+
+```sh
+export ASANA_AUTH_MODE="oauth"
+export ASANA_OAUTH_CLIENT_ID="<oauth-client-id>"
+ASANA_OAUTH_ACCESS_TOKEN="$(tr -d '\r\n' </path/to/private/runtime-access-token)"
+export ASANA_OAUTH_ACCESS_TOKEN
+export ASANA_PROJECT_GID="<project-gid>"
+export ASANA_WORKSPACE_GID="<workspace-gid>"
+export ASANA_BACKLOG_SECTION_GID="<backlog-section-gid>"
+export ASANA_BACKLOG_SECTION_WITNESS_TASK_GID="<backlog-witness-task-gid>"
+export ASANA_READY_FOR_SPEC_SECTION_GID="<ready-section-gid>"
+export ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID="<ready-witness-task-gid>"
+```
+
+Do not type real secret values into a command saved in shell history. A
+project-specific launcher may read the refreshed access token from a `0600`
+runtime file, export these non-secret IDs, change to the repository, and start
+Codex. Use a different launcher or configuration file for each Asana project.
 
 ## Configure polling
 
@@ -273,8 +407,24 @@ an autonomous API task that is blocked by a schema task:
     "edges": [{"dependent": "api", "blocker": "schema"}]
   },
   "tasks": [
-    {"ref": "schema", "name": "Add the schema"},
-    {"ref": "api", "name": "Use the schema"}
+    {
+      "ref": "schema",
+      "name": "Add the schema",
+      "custom_fields": {
+        "<priority-field-gid>": "<medium-option-gid>",
+        "<story-points-field-gid>": "<three-points-option-gid>",
+        "<work-type-field-gid>": "<enhancement-option-gid>"
+      }
+    },
+    {
+      "ref": "api",
+      "name": "Use the schema",
+      "custom_fields": {
+        "<priority-field-gid>": "<medium-option-gid>",
+        "<story-points-field-gid>": "<three-points-option-gid>",
+        "<work-type-field-gid>": "<enhancement-option-gid>"
+      }
+    }
   ]
 }
 ```
@@ -294,7 +444,8 @@ environment:
 ```sh
 export ASANA_AUTH_MODE="oauth"
 export ASANA_OAUTH_CLIENT_ID="..."
-export ASANA_OAUTH_ACCESS_TOKEN="..."
+ASANA_OAUTH_ACCESS_TOKEN="$(tr -d '\r\n' </path/to/private/runtime-access-token)"
+export ASANA_OAUTH_ACCESS_TOKEN
 export ASANA_BACKLOG_SECTION_GID="..."
 export ASANA_BACKLOG_SECTION_WITNESS_TASK_GID="..."
 export ASANA_READY_FOR_SPEC_SECTION_GID="..."
@@ -329,8 +480,10 @@ task after the first depend on the task immediately before it.
 The operation accepts at most 25 tasks. It rejects unknown task references,
 self-dependencies, duplicate edges, cycles, and graphs over Asana's limit of 30
 combined dependencies and dependents per task before creating anything.
-Each task may include a `custom_fields` object mapping project custom-field GIDs
-to enum-option GIDs. Those assignments are included in deterministic retry
+The low-level client permits each task to include a `custom_fields` object, but
+the `asana-backlog` skill requires Priority, Story Points, and Work Type for
+every task. Map their project custom-field GIDs to enum-option GIDs as shown
+above. Those assignments are included in deterministic retry
 identity, written during task creation, and read back before a component can be
 authorized. This requires the narrow `custom_fields:read` scope; it does not
 require Full Permissions.
