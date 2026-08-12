@@ -80,7 +80,7 @@ impl Fixture {
                 owner: "example".to_owned(),
                 project_number: 16,
                 status_field: "Status".to_owned(),
-                trusted_users: vec!["owainlewis".to_owned()],
+                trusted_users: vec!["example-user".to_owned()],
             }),
         };
         let catalog = WorkflowCatalog::load(&config).unwrap();
@@ -95,17 +95,17 @@ if [ "$1" = "api" ]; then
   endpoint="$2"
   if [ "$2" = "--paginate" ]; then endpoint="$4"; fi
   case "$endpoint" in
-    users/owainlewis) printf '{"id":42,"login":"owainlewis","node_id":"U_42"}' ;;
+    users/example-user) printf '{"id":42,"login":"example-user","node_id":"U_42"}' ;;
     repos/example/repo/issues\?*)
       labels='[]'; [ "$(cat .label-present)" = yes ] && labels='[{"name":"agent:ready"}]'
-      printf '[[{"number":7,"html_url":"https://github.com/example/repo/issues/7","title":"Fix it","body":"Clear acceptance criteria","labels":%s,"updated_at":"2026-07-22T10:00:00Z","state":"open","pull_request":null,"user":{"id":42,"login":"owainlewis"}}]]' "$labels"
+      printf '[[{"number":7,"html_url":"https://github.com/example/repo/issues/7","title":"Fix it","body":"Clear acceptance criteria","labels":%s,"updated_at":"2026-07-22T10:00:00Z","state":"open","pull_request":null,"user":{"id":42,"login":"example-user"}}]]' "$labels"
       ;;
     repos/example/repo/issues/7/timeline*)
-      printf '[[{"id":%s,"event":"labeled","actor":{"id":42,"login":"owainlewis"},"label":{"name":"agent:ready"},"created_at":"2026-07-22T09:00:00Z"}]]' "$(cat .event-id)"
+      printf '[[{"id":%s,"event":"labeled","actor":{"id":42,"login":"example-user"},"label":{"name":"agent:ready"},"created_at":"2026-07-22T09:00:00Z"}]]' "$(cat .event-id)"
       ;;
     repos/example/repo/issues/7)
       labels='[]'; [ "$(cat .label-present)" = yes ] && labels='[{"name":"agent:ready"}]'
-      printf '{"number":7,"html_url":"https://github.com/example/repo/issues/7","title":"Fix it","body":"Clear acceptance criteria","labels":%s,"updated_at":"2026-07-22T10:00:00Z","state":"open","pull_request":null,"user":{"id":42,"login":"owainlewis"}}' "$labels"
+      printf '{"number":7,"html_url":"https://github.com/example/repo/issues/7","title":"Fix it","body":"Clear acceptance criteria","labels":%s,"updated_at":"2026-07-22T10:00:00Z","state":"open","pull_request":null,"user":{"id":42,"login":"example-user"}}' "$labels"
       ;;
     *) echo "unexpected endpoint $endpoint" >&2; exit 1 ;;
   esac

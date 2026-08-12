@@ -74,12 +74,17 @@ timeout = "2h"
 maximum_timeout = "8h"
 max_concurrent = 1
 
+[agent_profile.default]
+model = "gpt-5.6-terra"
+reasoning_effort = "low"
+service_tier = "default"
+
 [source]
 type = "github"
-project_owner = "owainlewis"
+project_owner = "example-user"
 project_number = 16
 status_field = "Status"
-trusted_users = ["owainlewis"]
+trusted_users = ["example-user"]
 
 {triggers}
 "#
@@ -167,18 +172,21 @@ fn loads_explicit_tagged_triggers_and_plain_workflows() {
 type = "status"
 status = "Ready For Spec"
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "default"
 
 [trigger.implement]
 type = "label"
 label = "agent:ready"
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "45m"
+agent_profile = "default"
 
 [trigger.maintenance]
 type = "schedule"
 schedule = "*/10 * * * *"
 timezone = "Europe/London"
 workflow = ".flashy-factory/workflows/maintenance.md"
+agent_profile = "default"
 "#,
     );
     let fixture = Fixture::new(&config);
@@ -238,6 +246,7 @@ type = "label"
 label = "agent:ready"
 status = "Ready"
 workflow = ".flashy-factory/workflows/bad.md"
+agent_profile = "default"
 "#,
     ));
     let error = fixture.config().unwrap_err();
@@ -251,6 +260,7 @@ fn rejects_unsupported_runtime_and_source() {
 type = "status"
 status = "Ready"
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "default"
 "#,
     )
     .replace("runtime = \"codex\"", "runtime = \"claude\"");
@@ -271,6 +281,7 @@ fn catalog_rejects_frontmatter_and_missing_files() {
 type = "status"
 status = "Ready"
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "default"
 "#,
     ));
     fs::write(

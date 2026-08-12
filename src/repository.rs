@@ -243,16 +243,16 @@ mod tests {
     #[test]
     fn parses_gitlab_subgroups_and_host_qualified_identity() {
         for remote in [
-            "git@gitlab.com:DuskLabs/Carini/Polaris.git",
-            "https://GitLab.COM/DuskLabs/Carini/Polaris.git",
-            "ssh://git@gitlab.com/DuskLabs/Carini/Polaris.git",
+            "git@gitlab.com:example-group/subgroup/repository.git",
+            "https://GitLab.COM/example-group/subgroup/repository.git",
+            "ssh://git@gitlab.com/example-group/subgroup/repository.git",
         ] {
             let repository = RepositoryRef::parse(remote).unwrap();
             assert_eq!(repository.provider, RepositoryProvider::GitLab);
             assert_eq!(repository.host, "gitlab.com");
-            assert_eq!(repository.namespace, "DuskLabs/Carini");
-            assert_eq!(repository.name, "Polaris");
-            assert_eq!(repository.identity(), "gitlab.com/dusklabs/carini/polaris");
+            assert_eq!(repository.namespace, "example-group/subgroup");
+            assert_eq!(repository.name, "repository");
+            assert_eq!(repository.identity(), "gitlab.com/example-group/subgroup/repository");
         }
     }
 

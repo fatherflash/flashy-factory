@@ -12,11 +12,22 @@ max_concurrent = 2
 [source]
 command = [".flashy-factory/sources/github"]
 
+[agent_profile.specification]
+model = "gpt-5.6-terra"
+reasoning_effort = "low"
+service_tier = "default"
+
+[agent_profile.implementation]
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+service_tier = "default"
+
 [trigger.triage]
 type = "source"
 state = "open"
 labels = ["factory:ready-for-spec"]
 workflow = ".flashy-factory/workflows/triage.md"
+agent_profile = "specification"
 
 [trigger.implement]
 type = "source"
@@ -24,9 +35,11 @@ state = "open"
 labels = ["factory:ready-to-implement"]
 workflow = ".flashy-factory/workflows/implement.md"
 timeout = "4h"
+agent_profile = "implementation"
 
 [trigger.bug-finder]
 type = "schedule"
 schedule = "0 9 * * 1"
 timezone = "Europe/London"
 workflow = ".flashy-factory/workflows/bug-finder.md"
+agent_profile = "specification"

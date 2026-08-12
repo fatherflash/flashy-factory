@@ -247,12 +247,12 @@ async fn persisted_activity_is_structural_and_never_contains_raw_secret_output()
         r#"cat >/dev/null
 printf '{"type":"item.completed","text":"TOKEN='
 awk 'BEGIN { for (i = 0; i < 70000; i++) printf "s" }'
-echo '","item":{"type":"command_execution","command":"print TOKEN"},"url":"https://github.com/owainlewis/factory/pull/123"}'
+echo '","item":{"type":"command_execution","command":"print TOKEN"},"url":"https://github.com/example/factory/pull/123"}'
 printf 'done' > "$output"
 exit 0"#,
     );
     let (observations, receiver) =
-        repository_observation_channel(RepositoryProvider::GitHub, "owainlewis/factory");
+        repository_observation_channel(RepositoryProvider::GitHub, "example/factory");
 
     let result = CodexRuntime::new(executable)
         .with_activity_streaming(false)
@@ -271,7 +271,7 @@ exit 0"#,
     assert!(result.succeeded());
     assert_eq!(
         observation.pull_request.as_deref(),
-        Some("https://github.com/owainlewis/factory/pull/123")
+        Some("https://github.com/example/factory/pull/123")
     );
     let activity = observation.activity.unwrap();
     assert_eq!(activity, "Codex progress: command finished\n");

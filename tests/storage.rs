@@ -18,7 +18,7 @@ use rusqlite::Connection;
 
 fn ticket(revision: &str) -> TaskIdentity {
     TaskIdentity::ticket(
-        "owainlewis/factory",
+        "example/factory",
         "implement-ready-ticket",
         "3",
         revision,
@@ -29,7 +29,7 @@ fn ticket(revision: &str) -> TaskIdentity {
 fn ticket_runtimes() -> HashMap<(String, String, String), String> {
     HashMap::from([(
         (
-            "owainlewis/factory".to_owned(),
+            "example/factory".to_owned(),
             "implement-ready-ticket".to_owned(),
             "ticket".to_owned(),
         ),
@@ -47,7 +47,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
     ledger
         .enqueue(
             &TaskIdentity::ticket(
-                "owainlewis/factory",
+                "example/factory",
                 "triage-ticket",
                 "41",
                 "ready-for-spec-1",
@@ -58,7 +58,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
     ledger
         .enqueue(
             &TaskIdentity::ticket(
-                "owainlewis/factory",
+                "example/factory",
                 "implement-ready-ticket",
                 "41",
                 "ready-to-implement-1",
@@ -69,7 +69,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
     let runtimes = HashMap::from([
         (
             (
-                "owainlewis/factory".to_owned(),
+                "example/factory".to_owned(),
                 "triage-ticket".to_owned(),
                 "ticket".to_owned(),
             ),
@@ -77,7 +77,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
         ),
         (
             (
-                "owainlewis/factory".to_owned(),
+                "example/factory".to_owned(),
                 "implement-ready-ticket".to_owned(),
                 "ticket".to_owned(),
             ),
@@ -87,7 +87,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
 
     let first = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "owner",
             std::process::id(),
@@ -98,7 +98,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
     assert!(
         ledger
             .claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &runtimes,
                 "owner",
                 std::process::id(),
@@ -118,7 +118,7 @@ fn one_issue_cannot_run_two_pipeline_workflows_at_once() {
         .unwrap();
     let second = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "owner",
             std::process::id(),
@@ -142,7 +142,7 @@ fn initializes_in_data_directory_and_persists_across_reopen() {
     let persisted = reopened.task(enqueued.task.id).unwrap().unwrap();
 
     assert_eq!(persisted.state, TaskState::Queued);
-    assert_eq!(persisted.repository, "owainlewis/factory");
+    assert_eq!(persisted.repository, "example/factory");
     assert_eq!(persisted.source_item.as_deref(), Some("3"));
 }
 
@@ -200,7 +200,7 @@ fn ticket_and_schedule_identities_deduplicate_exact_triggers() {
     let duplicate = ledger.enqueue(&ticket("revision-1")).unwrap();
     let changed = ledger.enqueue(&ticket("revision-2")).unwrap();
     let scheduled =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "2026-07-20T09:00:00Z").unwrap();
+        TaskIdentity::scheduled("example/factory", "find-bugs", "2026-07-20T09:00:00Z").unwrap();
     let first_schedule = ledger.enqueue(&scheduled).unwrap();
     let duplicate_schedule = ledger.enqueue(&scheduled).unwrap();
 
@@ -259,7 +259,7 @@ fn container_identity_and_terminal_evidence_are_durable() {
     ledger.enqueue(&ticket("container-run")).unwrap();
     let claimed = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &ticket_runtimes(),
             "container-owner",
             std::process::id(),
@@ -315,7 +315,7 @@ fn sandbox_identity_and_terminal_evidence_are_durable() {
     ledger.enqueue(&ticket("sandbox-run")).unwrap();
     let claimed = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &ticket_runtimes(),
             "sandbox-owner",
             std::process::id(),
@@ -380,7 +380,7 @@ fn delivery_workspace_reservations_are_bounded_to_ten_active_slots() {
         let task = ledger
             .enqueue(
                 &TaskIdentity::ticket(
-                    "owainlewis/factory",
+                    "example/factory",
                     "implement-ready-ticket",
                     number.to_string(),
                     format!("approval-{number}"),
@@ -426,12 +426,12 @@ fn delivery_workspace_reservations_are_bounded_to_ten_active_slots() {
         .register_daemon_owner("workspace-cap-owner", std::process::id())
         .unwrap();
     let workdirs = HashMap::from([(
-        "owainlewis/factory".to_owned(),
+        "example/factory".to_owned(),
         "/canonical/repository".to_owned(),
     )]);
     let claimed = ledger
         .claim_and_start_run_with_workdirs_filtered(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &ticket_runtimes(),
             "workspace-cap-owner",
             std::process::id(),
@@ -454,12 +454,12 @@ fn a_new_approval_revision_enqueues_without_an_observed_label_gap() {
         payload: format!("payload-{revision}"),
     };
     let first = ledger
-        .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-a")])
+        .reconcile_ticket_poll("example/factory", "deliver", &[observe("approval-a")])
         .unwrap();
     assert_eq!(first.iter().filter(|task| task.created).count(), 1);
     assert!(
         ledger
-            .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-a")])
+            .reconcile_ticket_poll("example/factory", "deliver", &[observe("approval-a")])
             .unwrap()
             .is_empty()
     );
@@ -470,7 +470,7 @@ fn a_new_approval_revision_enqueues_without_an_observed_label_gap() {
         .unwrap();
 
     let second = ledger
-        .reconcile_ticket_poll("owainlewis/factory", "deliver", &[observe("approval-b")])
+        .reconcile_ticket_poll("example/factory", "deliver", &[observe("approval-b")])
         .unwrap();
 
     assert_eq!(second.iter().filter(|task| task.created).count(), 1);
@@ -489,7 +489,7 @@ fn unchanged_waiting_dependency_observation_does_not_reenqueue_but_a_new_revisio
     };
     let first = ledger
         .reconcile_ticket_poll(
-            "owainlewis/factory",
+            "example/factory",
             "reconcile-dependencies",
             &[observe("asana:waiting:sha256:blocked")],
         )
@@ -498,7 +498,7 @@ fn unchanged_waiting_dependency_observation_does_not_reenqueue_but_a_new_revisio
     assert!(
         ledger
             .reconcile_ticket_poll(
-                "owainlewis/factory",
+                "example/factory",
                 "reconcile-dependencies",
                 &[observe("asana:waiting:sha256:blocked")],
             )
@@ -514,7 +514,7 @@ fn unchanged_waiting_dependency_observation_does_not_reenqueue_but_a_new_revisio
 
     let released = ledger
         .reconcile_ticket_poll(
-            "owainlewis/factory",
+            "example/factory",
             "reconcile-dependencies",
             &[observe("asana:waiting:sha256:released")],
         )
@@ -530,7 +530,7 @@ fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
     let scheduled = ledger
         .enqueue(
             &TaskIdentity::scheduled(
-                "owainlewis/factory",
+                "example/factory",
                 "shared-workflow",
                 "2026-07-20T09:00:00Z",
             )
@@ -545,7 +545,7 @@ fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
         .unwrap();
     let ticket = ledger
         .enqueue(
-            &TaskIdentity::ticket("owainlewis/factory", "shared-workflow", "7", "revision-1")
+            &TaskIdentity::ticket("example/factory", "shared-workflow", "7", "revision-1")
                 .unwrap(),
         )
         .unwrap()
@@ -571,7 +571,7 @@ fn previous_schedule_success_excludes_ticket_runs_for_the_same_workflow() {
 
     assert_eq!(
         ledger
-            .latest_successful_scheduled_run_finished_at("owainlewis/factory", "shared-workflow",)
+            .latest_successful_scheduled_run_finished_at("example/factory", "shared-workflow",)
             .unwrap(),
         Some(100)
     );
@@ -587,7 +587,7 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
         .unwrap();
     let cursor = ledger
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "* * * * *|UTC",
             60_000,
@@ -597,7 +597,7 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
         .unwrap();
     assert_eq!(cursor.next_due_at, 60_000);
     let identity =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+        TaskIdentity::scheduled("example/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
     let first = ledger
         .enqueue_scheduled_occurrence(
             &identity,
@@ -622,7 +622,7 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
 
     let restart = ledger
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "* * * * *|UTC",
             120_000,
@@ -647,7 +647,7 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
     );
     let after_sleep = ledger
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "* * * * *|UTC",
             660_000,
@@ -664,7 +664,7 @@ fn schedule_cursor_atomically_enqueues_advances_and_skips_downtime() {
         .unwrap();
     let after_downtime = ledger
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "* * * * *|UTC",
             660_000,
@@ -685,7 +685,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
     first
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "old|UTC",
             60_000,
@@ -700,7 +700,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
     let preserved = second
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "old|UTC",
             120_000,
@@ -710,7 +710,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
     assert_eq!(preserved.next_due_at, 60_000);
     let queued_under_old_definition =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
+        TaskIdentity::scheduled("example/factory", "find-bugs", "1970-01-01T00:01:00Z").unwrap();
     first
         .enqueue_scheduled_occurrence(
             &queued_under_old_definition,
@@ -723,7 +723,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
 
     let conflict = second.initialize_schedule_cursor(
-        "owainlewis/factory",
+        "example/factory",
         "find-bugs",
         "new|UTC",
         90_000,
@@ -742,7 +742,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
     let changed = second
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "new|UTC",
             90_000,
@@ -767,7 +767,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
         .unwrap();
     let scheduled_runtimes = HashMap::from([(
         (
-            "owainlewis/factory".to_owned(),
+            "example/factory".to_owned(),
             "find-bugs".to_owned(),
             "scheduled".to_owned(),
         ),
@@ -776,7 +776,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
     assert!(
         first
             .claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &scheduled_runtimes,
                 "schedule-owner-a",
                 std::process::id(),
@@ -791,7 +791,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
     assert!(
         stale_daemon
             .initialize_schedule_cursor(
-                "owainlewis/factory",
+                "example/factory",
                 "find-bugs",
                 "old|UTC",
                 120_000,
@@ -801,7 +801,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
             .is_err()
     );
     let stale =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:00:30Z").unwrap();
+        TaskIdentity::scheduled("example/factory", "find-bugs", "1970-01-01T00:00:30Z").unwrap();
     assert!(
         first
             .enqueue_scheduled_occurrence(
@@ -815,7 +815,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
             .is_none()
     );
     let current =
-        TaskIdentity::scheduled("owainlewis/factory", "find-bugs", "1970-01-01T00:01:30Z").unwrap();
+        TaskIdentity::scheduled("example/factory", "find-bugs", "1970-01-01T00:01:30Z").unwrap();
     assert!(
         second
             .enqueue_scheduled_occurrence(
@@ -830,7 +830,7 @@ fn live_schedule_owner_preserves_due_work_and_fingerprint_blocks_stale_daemon() 
     );
     let claimed = second
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &scheduled_runtimes,
             "schedule-owner-b",
             std::process::id(),
@@ -872,7 +872,7 @@ fn crashed_schedule_owner_does_not_preserve_offline_due_work() {
         .unwrap();
     crashed
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "same|UTC",
             60_000,
@@ -887,7 +887,7 @@ fn crashed_schedule_owner_does_not_preserve_offline_due_work() {
         .unwrap();
     let cursor = restarted
         .initialize_schedule_cursor(
-            "owainlewis/factory",
+            "example/factory",
             "find-bugs",
             "same|UTC",
             120_000,
@@ -934,7 +934,7 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
     let task = ledger
         .enqueue(
             &TaskIdentity::scheduled(
-                "owainlewis/factory",
+                "example/factory",
                 "implement-ready-ticket",
                 "2026-07-20T09:00:00Z",
             )
@@ -949,7 +949,7 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
     assert!(
         ledger
             .claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &ticket_runtimes(),
                 "kind-owner",
                 std::process::id(),
@@ -964,7 +964,7 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
 
     let scheduled_runtimes = HashMap::from([(
         (
-            "owainlewis/factory".to_owned(),
+            "example/factory".to_owned(),
             "implement-ready-ticket".to_owned(),
             "scheduled".to_owned(),
         ),
@@ -973,7 +973,7 @@ fn claim_requires_task_kind_to_match_the_current_workflow_trigger() {
     assert!(
         ledger
             .claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &scheduled_runtimes,
                 "kind-owner",
                 std::process::id(),
@@ -1006,7 +1006,7 @@ fn expired_daemon_owner_cannot_claim_or_start_work() {
 
     let error = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &ticket_runtimes(),
             "expired-claim-owner",
             std::process::id(),
@@ -1054,7 +1054,7 @@ fn owner_lease_is_checked_after_waiting_for_the_claim_lock() {
         thread::spawn(move || {
             barrier.wait();
             claimant.claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &ticket_runtimes(),
                 "claim-lock-owner",
                 std::process::id(),
@@ -1398,28 +1398,28 @@ fn approval_reservation_serializes_reapproval_against_active_work() {
     let path = temp.path().join("ledger.db");
     let mut ledger = Ledger::open(&path).unwrap();
     ledger
-        .reserve_issue_approval("owainlewis/factory", 3, "reservation-one")
+        .reserve_issue_approval("example/factory", 3, "reservation-one")
         .unwrap();
     assert!(
         ledger
-            .reserve_issue_approval("owainlewis/factory", 3, "reservation-two")
+            .reserve_issue_approval("example/factory", 3, "reservation-two")
             .unwrap_err()
             .to_string()
             .contains("already has an approval operation")
     );
     assert!(
         ledger
-            .issue_approval_is_reserved("owainlewis/factory", 3)
+            .issue_approval_is_reserved("example/factory", 3)
             .unwrap()
     );
     ledger
-        .release_issue_approval("owainlewis/factory", 3, "reservation-one")
+        .release_issue_approval("example/factory", 3, "reservation-one")
         .unwrap();
 
     ledger.enqueue(&ticket("active-approval")).unwrap();
     assert!(
         ledger
-            .reserve_issue_approval("owainlewis/factory", 3, "reservation-three")
+            .reserve_issue_approval("example/factory", 3, "reservation-three")
             .unwrap_err()
             .to_string()
             .contains("active Flashy Factory work")
@@ -1437,12 +1437,12 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
     let task = ledger.enqueue(&ticket("recovery-revision")).unwrap().task;
     let runtimes = ticket_runtimes();
     let workdirs = HashMap::from([(
-        "owainlewis/factory".to_owned(),
+        "example/factory".to_owned(),
         "/worktrees/factory-3".to_owned(),
     )]);
     let interrupted = ledger
         .claim_and_start_run_with_workdirs(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "interrupted-owner",
             std::process::id(),
@@ -1457,8 +1457,8 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
             None,
             None,
             Some("thread-recover"),
-            Some("https://github.com/owainlewis/factory/pull/99"),
-            Some("PR https://github.com/owainlewis/factory/pull/99 SECRET=hunter2"),
+            Some("https://github.com/example/factory/pull/99"),
+            Some("PR https://github.com/example/factory/pull/99 SECRET=hunter2"),
         )
         .unwrap();
     ledger.remove_daemon_owner("interrupted-owner").unwrap();
@@ -1484,7 +1484,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .unwrap();
     let first_recovery = ledger
         .claim_and_start_run_with_workdirs(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "recovery-owner",
             std::process::id(),
@@ -1516,7 +1516,7 @@ fn orphan_recovery_is_deduplicated_bounded_and_excludes_terminal_runs() {
         .unwrap();
     let final_recovery = ledger
         .claim_and_start_run_with_workdirs(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "recovery-owner",
             std::process::id(),
@@ -1603,7 +1603,7 @@ fn orphan_recovery_does_not_signal_a_reused_process_group() {
     let runtimes = ticket_runtimes();
     let run = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "gone-owner",
             std::process::id(),
@@ -1661,7 +1661,7 @@ fn cancellation_requests_are_durable_idempotent_and_force_cancelled_outcome() {
         .unwrap();
     let run = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "storage-test-owner",
             std::process::id(),
@@ -1734,7 +1734,7 @@ fn cancellation_rejects_a_reused_live_pid_when_the_owner_lease_is_stale() {
     let runtimes = ticket_runtimes();
     let run = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "stale-owner",
             std::process::id(),
@@ -1772,7 +1772,7 @@ fn orphan_recovery_completes_a_pending_cancellation_without_retrying() {
         .unwrap();
     let run = ledger
         .claim_and_start_run(
-            &["owainlewis/factory".to_owned()],
+            &["example/factory".to_owned()],
             &runtimes,
             "cancelled-owner",
             std::process::id(),
@@ -1818,7 +1818,7 @@ fn concurrent_completion_and_cancellation_always_leave_a_terminal_run() {
             .task;
         let run = setup
             .claim_and_start_run(
-                &["owainlewis/factory".to_owned()],
+                &["example/factory".to_owned()],
                 &runtimes,
                 "race-owner",
                 std::process::id(),

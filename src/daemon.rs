@@ -5754,14 +5754,14 @@ mod tests {
         let mut target = RepositoryTarget {
             path: repository.clone(),
             provider: crate::repository::RepositoryProvider::GitHub,
-            identity: "owainlewis/factory".to_owned(),
+            identity: "example/factory".to_owned(),
             workflows: HashMap::new(),
         };
         let mut previous = Run {
             id: 7,
             task_id: 3,
             workflow: "implement-ready-ticket".to_owned(),
-            repository: "owainlewis/factory".to_owned(),
+            repository: "example/factory".to_owned(),
             source_item: Some("8".to_owned()),
             runtime: "codex".to_owned(),
             started_at: 1,
@@ -5775,7 +5775,7 @@ mod tests {
             owner_id: None,
             process_id: None,
             process_identity: None,
-            pull_request: Some("https://github.com/owainlewis/factory/pull/99".to_owned()),
+            pull_request: Some("https://github.com/example/factory/pull/99".to_owned()),
             last_activity_at: 2,
             activity: Some("Codex event: item.completed".to_owned()),
             working_directory: Some(repository.display().to_string()),
@@ -5796,19 +5796,19 @@ mod tests {
         assert!(prompt.contains(repository.to_str().unwrap()));
         assert!(prompt.contains(worktree.to_str().unwrap()));
         assert!(prompt.contains("codex/recovery"));
-        assert!(prompt.contains("https://github.com/owainlewis/factory/pull/99"));
+        assert!(prompt.contains("https://github.com/example/factory/pull/99"));
         assert!(prompt.contains("Codex event: item.completed"));
         assert!(prompt.contains("runtime interrupted"));
 
         target.provider = crate::repository::RepositoryProvider::GitLab;
         target.identity = "gitlab.com/group/subgroup/factory".to_owned();
-        previous.pull_request = Some("https://github.com/owainlewis/factory/pull/99".to_owned());
+        previous.pull_request = Some("https://github.com/example/factory/pull/99".to_owned());
         previous.result = Some(
             "Created https://gitlab.com/group/subgroup/factory/-/merge_requests/12".to_owned(),
         );
         let prompt = recovery_prompt("base", &previous, &target);
         assert!(prompt.contains("https://gitlab.com/group/subgroup/factory/-/merge_requests/12"));
-        assert!(!prompt.contains("https://github.com/owainlewis/factory/pull/99"));
+        assert!(!prompt.contains("https://github.com/example/factory/pull/99"));
         assert!(prompt.contains("Inspect current repository, ticket, GitLab, change-request"));
     }
 

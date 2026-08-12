@@ -51,16 +51,16 @@ impl Fixture {
         fs::write(repository.join(".status-option"), "rfs").unwrap();
         fs::write(repository.join(".status-updated"), "2026-07-21T10:00:00Z").unwrap();
         fs::write(repository.join(".author-id"), "U_1").unwrap();
-        fs::write(repository.join(".author-login"), "owainlewis").unwrap();
+        fs::write(repository.join(".author-login"), "example-user").unwrap();
         fs::write(repository.join(".issue-state"), "OPEN").unwrap();
         let workspace_root = temp.path().join("workspaces");
         fs::create_dir(&workspace_root).unwrap();
         let source = SourceConfig {
             command: Vec::new(),
-            owner: "owainlewis".to_owned(),
+            owner: "example-user".to_owned(),
             project_number: 16,
             status_field: "Status".to_owned(),
-            trusted_users: vec!["owainlewis".to_owned()],
+            trusted_users: vec!["example-user".to_owned()],
         };
         let config = Config {
             repositories: vec![repository.canonicalize().unwrap()],
@@ -125,7 +125,7 @@ if [ "$1" = "project" ] && [ "$2" = "item-edit" ]; then
   exit 0
 fi
 if [ "$1" = "api" ] && [ "$2" = "user" ]; then printf '{"id":99,"login":"factory-bot"}'; exit 0; fi
-if [ "$1" = "api" ] && [ "$2" = "users/owainlewis" ]; then printf '{"id":1,"login":"owainlewis","node_id":"U_1"}'; exit 0; fi
+if [ "$1" = "api" ] && [ "$2" = "users/example-user" ]; then printf '{"id":1,"login":"example-user","node_id":"U_1"}'; exit 0; fi
 if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
   option=$(cat .status-option)
   updated=$(cat .status-updated)

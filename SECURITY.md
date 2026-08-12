@@ -10,8 +10,9 @@ the latest commit on `main` receives security fixes.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Email
-[owain@owainlewis.com](mailto:owain@owainlewis.com) with:
+Do not open a public issue for a suspected vulnerability. Submit a private
+[GitHub security advisory](https://github.com/fatherflash/flashy-factory/security/advisories/new)
+with:
 
 - a clear description of the issue and its impact;
 - the affected revision and configuration;

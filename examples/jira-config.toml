@@ -18,11 +18,22 @@ command = [
   "--max-results", "100",
 ]
 
+[agent_profile.specification]
+model = "gpt-5.6-terra"
+reasoning_effort = "low"
+service_tier = "default"
+
+[agent_profile.implementation]
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+service_tier = "default"
+
 [trigger.triage]
 type = "source"
 state = "Ready For Spec"
 labels = ["factory-ready"]
 workflow = ".flashy-factory/workflows/jira-triage.md"
+agent_profile = "specification"
 
 [trigger.implement]
 type = "source"
@@ -30,3 +41,4 @@ state = "Ready To Implement"
 labels = ["factory-ready"]
 workflow = ".flashy-factory/workflows/jira-implement.md"
 timeout = "4h"
+agent_profile = "implementation"

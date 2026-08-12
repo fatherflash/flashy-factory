@@ -72,11 +72,17 @@ max_concurrent = 1
 [source]
 command = ["./.flashy-factory/source.sh"]
 
+[agent_profile.implementation]
+model = "gpt-5.6-terra"
+reasoning_effort = "medium"
+service_tier = "default"
+
 [trigger.implement]
 type = "source"
 state = "ready"
 labels = ["factory:ready"]
 workflow = ".flashy-factory/workflows/implement.md"
+agent_profile = "implementation"
 "#,
     )
     .unwrap();

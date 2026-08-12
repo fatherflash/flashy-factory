@@ -194,14 +194,3 @@ Report created tasks, their GIDs, project, priority, story points, work type,
 authorization tag, delivery policy, verified edges, exact missing edges,
 component status, and failures. Do not claim the autonomous batch is ready
 when the command returns nonzero.
-
-## Polaris Internal Portal defaults
-
-Use these facts only for the **Polaris Internal Portal** project; re-check them
-if Asana returns different project metadata.
-
-- Section: Backlog.
-- Priority options: High, Medium, Low.
-- Story Points: 1 = one to three days; 3 = four to seven days; 5 = more than
-  one week.
-- Work Type options: bug, enhancement, documentation.

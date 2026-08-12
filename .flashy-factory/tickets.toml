@@ -10,8 +10,8 @@ documentation = "documentation"
 
 [priority]
 storage = "project_field"
-project_owner = "owainlewis"
-project_number = 16
+project_owner = "example-owner"
+project_number = 1
 field = "Priority"
 
 [priority.values]
@@ -22,8 +22,8 @@ p3 = "P3"
 
 [status]
 storage = "project_field"
-project_owner = "owainlewis"
-project_number = 16
+project_owner = "example-owner"
+project_number = 1
 field = "Status"
 
 [status.values]

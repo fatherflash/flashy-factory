@@ -734,8 +734,8 @@ mod tests {
     #[test]
     fn accepts_host_qualified_gitlab_subgroup_identities() {
         assert_eq!(
-            validate_identity(0, "gitlab.com/DuskLabs/Carini/Polaris").unwrap(),
-            "gitlab.com/DuskLabs/Carini/Polaris"
+            validate_identity(0, "gitlab.com/example-group/subgroup/repository").unwrap(),
+            "gitlab.com/example-group/subgroup/repository"
         );
         assert!(validate_identity(0, "gitlab.example.com/group/repository").is_err());
         assert!(validate_identity(0, "gitlab.com/group").is_err());
