@@ -222,6 +222,23 @@ checklist. The [operations
 guide](docs/operations.md#persistent-linux-service-with-systemd) contains a
 reusable systemd deployment.
 
+After persistent setup, the normal SSH workflow is:
+
+```sh
+ssh user@example-host
+codex-example-project
+```
+
+The project-specific `codex-example-project` launcher enters the repository and
+loads the narrow OAuth environment needed by the `asana-backlog` skill. It does
+not start Factory: the enabled systemd service is already polling independently
+of SSH and interactive Codex sessions. Running ordinary `codex` inside the
+repository is still valid for code work, but it does not automatically receive
+the verified Asana batch-creation environment. Follow the [launcher
+template](docs/asana.md#install-a-project-specific-codex-launcher) once for each
+project that uses interactive Asana backlog creation. The linked guide also
+points to the required single-host OAuth refresh service.
+
 ### Agent profiles
 
 Repository-owned profiles choose the Codex model, reasoning effort, and service
@@ -352,6 +369,7 @@ fit behind the same source, trigger, workflow, and worker boundaries later.
 - [Setup, configuration, and first run](docs/local-v1.md)
 - [Operations and recovery](docs/operations.md)
 - [Asana project, credentials, GIDs, source, and agent client](docs/asana.md)
+- [Asana OAuth refresh service for interactive Codex](docs/asana-oauth-refresh.md)
 - [Jira source adapter](docs/jira.md)
 - [Docker Sandbox development environment](docs/docker-sandbox-template.md)
 - [Contributing](CONTRIBUTING.md)

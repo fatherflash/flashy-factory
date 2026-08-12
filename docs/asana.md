@@ -179,6 +179,11 @@ one hour, so a local helper or token broker must exchange the refresh token for
 a new access token before expiry and expose only that short-lived token to the
 interactive Codex process.
 
+For a single Linux host, follow the complete [systemd OAuth refresh
+walkthrough](asana-oauth-refresh.md). It encrypts the client secret and refresh
+token separately, validates every minted access token, and creates the private
+runtime file used by the launcher below.
+
 The Factory daemon does not need the OAuth client secret, OAuth refresh token,
 or OAuth access token. The backlog client does not accept or persist the client
 secret or refresh token. Keeping these two credential paths separate limits
@@ -199,10 +204,77 @@ export ASANA_READY_FOR_SPEC_SECTION_GID="<ready-section-gid>"
 export ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID="<ready-witness-task-gid>"
 ```
 
-Do not type real secret values into a command saved in shell history. A
-project-specific launcher may read the refreshed access token from a `0600`
-runtime file, export these non-secret IDs, change to the repository, and start
-Codex. Use a different launcher or configuration file for each Asana project.
+Do not type real secret values into a command saved in shell history.
+
+### Install a project-specific Codex launcher
+
+Use this launcher pattern for every project that creates tasks through the
+`asana-backlog` skill. It is not required merely to run Factory or to use Codex
+for ordinary code work. Replace every angle-bracket placeholder, including the
+absolute Codex path, repository path, Asana IDs, and filesystem-safe service
+name. This example uses `example-project`:
+
+```sh
+#!/bin/sh
+set -eu
+
+token_file=/run/factory-example-project/asana-oauth-access-token
+if [ ! -r "$token_file" ]; then
+    echo "The project's Asana OAuth access token is unavailable." >&2
+    echo "Run the configured OAuth refresh service and try again." >&2
+    exit 1
+fi
+
+ASANA_AUTH_MODE=oauth
+ASANA_OAUTH_CLIENT_ID="<oauth-client-id>"
+ASANA_OAUTH_ACCESS_TOKEN="$(tr -d '\r\n' <"$token_file")"
+ASANA_PROJECT_GID="<project-gid>"
+ASANA_WORKSPACE_GID="<workspace-gid>"
+ASANA_BACKLOG_SECTION_GID="<backlog-section-gid>"
+ASANA_BACKLOG_SECTION_WITNESS_TASK_GID="<backlog-witness-task-gid>"
+ASANA_READY_FOR_SPEC_SECTION_GID="<ready-section-gid>"
+ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID="<ready-witness-task-gid>"
+
+export ASANA_AUTH_MODE ASANA_OAUTH_CLIENT_ID ASANA_OAUTH_ACCESS_TOKEN
+export ASANA_PROJECT_GID ASANA_WORKSPACE_GID
+export ASANA_BACKLOG_SECTION_GID ASANA_BACKLOG_SECTION_WITNESS_TASK_GID
+export ASANA_READY_FOR_SPEC_SECTION_GID
+export ASANA_READY_FOR_SPEC_SECTION_WITNESS_TASK_GID
+
+cd /absolute/path/to/repository
+exec /absolute/path/to/codex "$@"
+```
+
+Save it as `~/.local/bin/codex-example-project`, replacing `example-project`
+with your service name. Make it executable only by your account and confirm
+`~/.local/bin` is on `PATH`:
+
+```sh
+chmod 0700 ~/.local/bin/codex-example-project
+command -v codex-example-project
+```
+
+Install the [systemd OAuth refresh service](asana-oauth-refresh.md) first. It
+creates the parent runtime directory as mode `0700`, owned by the interactive
+Unix user, and atomically writes the access token as mode `0600`. The launcher
+contains only non-secret IDs; it reads the short-lived secret at runtime and
+never prints it. Use a separate launcher and runtime token path for each Asana
+project.
+
+After setup, the normal remote workflow is:
+
+```sh
+ssh user@example-host
+codex-example-project
+```
+
+The command enters the configured repository and starts Codex with verified
+backlog creation available. It does not run `factory init`, start a second
+Factory daemon, or affect the existing systemd service. If the launcher reports
+that the token is unavailable, start the project's configured OAuth refresh
+service as shown in the [refresh
+guide](asana-oauth-refresh.md#4-start-and-verify-refresh), then retry. Do not
+fall back to copying an access token into the launcher.
 
 ## Configure polling
 

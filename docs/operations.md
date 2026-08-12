@@ -212,7 +212,11 @@ Factory reset.
 Keep OAuth refresh credentials for verified backlog creation in a separate
 oneshot service or external token manager. Do not load the OAuth client secret
 or refresh token into the Factory daemon. See the
-[Asana guide](asana.md#use-narrow-oauth-for-verified-backlog-batches).
+[Asana OAuth guide](asana.md#use-narrow-oauth-for-verified-backlog-batches) and
+install the optional [project-specific Codex
+launcher](asana.md#install-a-project-specific-codex-launcher) when interactive
+backlog creation is required. A single-host deployment can use the complete
+[systemd OAuth refresh walkthrough](asana-oauth-refresh.md).
 
 For several repositories backed by distinct Asana projects, install one clearly
 named service per repository by default. The generated Asana sources read
