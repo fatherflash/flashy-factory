@@ -170,7 +170,7 @@ fn run_batch(api_base: &str, mut manifest: serde_json::Value) -> Output {
     fs::write(&input, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let (token_info_url, token_server) = serve(vec![Response {
         status: "200 OK",
-        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":1217184666380172}"#,
+        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":1217184666380172}"#,
         headers: &[],
     }]);
     let mut command = Command::new(client());
@@ -228,8 +228,6 @@ fn missing_external_task() -> Response {
 
 const EXTERNAL_TASK_A_BACKLOG: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"e3ff484a2539a167515a7e19c900b5d224d02b136dbc0565869ee1c3cc4433cf\",\"content_sha256\":\"a5ce28b82ad58d6612fde2268008ec295a41d57fbcf8f8ca56e26ca9e9597a66\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"custom_fields":[]}}"#;
 
-const EXTERNAL_TASK_A_READY: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"e3ff484a2539a167515a7e19c900b5d224d02b136dbc0565869ee1c3cc4433cf\",\"content_sha256\":\"a5ce28b82ad58d6612fde2268008ec295a41d57fbcf8f8ca56e26ca9e9597a66\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"custom_fields":[]}}"#;
-
 const EXTERNAL_TASK_A_CHAIN: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"0876b7b11dd6e6c495c8c293748422e34e0781aab9841bbd9ac1de7f0a700215\",\"content_sha256\":\"a5ce28b82ad58d6612fde2268008ec295a41d57fbcf8f8ca56e26ca9e9597a66\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"custom_fields":[]}}"#;
 
 const EXTERNAL_TASK_A_INDEPENDENT_TWO: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"18145784629476ebf30fac250814ab48cf96d7358d004289c0664eeee9581e29\",\"content_sha256\":\"a5ce28b82ad58d6612fde2268008ec295a41d57fbcf8f8ca56e26ca9e9597a66\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"custom_fields":[]}}"#;
@@ -237,6 +235,24 @@ const EXTERNAL_TASK_A_INDEPENDENT_TWO: &str = r#"{"data":{"gid":"task-a","name":
 fn task(reference: &str, name: &str) -> serde_json::Value {
     serde_json::json!({"ref": reference, "name": name})
 }
+
+fn task_with_fields(reference: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "ref": reference,
+        "name": name,
+        "custom_fields": {
+            "priority-field": "high-option",
+            "points-field": "three-option",
+            "type-field": "enhancement-option"
+        }
+    })
+}
+
+const EXTERNAL_TASK_A_FIELDS_BACKLOG: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"f82b6fa8ed17fdf9bdd216af9679a4a1a246f45fa18d5f78ff3e0977435555f0\",\"content_sha256\":\"d3f83179dc2dd9b3f469f8064adfbe82071864cdcf69fb159181c267909dd710\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#;
+
+const EXTERNAL_TASK_A_FIELDS_READY: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"f82b6fa8ed17fdf9bdd216af9679a4a1a246f45fa18d5f78ff3e0977435555f0\",\"content_sha256\":\"d3f83179dc2dd9b3f469f8064adfbe82071864cdcf69fb159181c267909dd710\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#;
+
+const EXTERNAL_TASK_A_FIELDS_WRONG: &str = r#"{"data":{"gid":"task-a","name":"A","notes":"","completed":false,"external":{"gid":"flashy-factory:test-batch:batch","data":"{\"batch_creation_id\":\"test-batch\",\"batch_definition_sha256\":\"f82b6fa8ed17fdf9bdd216af9679a4a1a246f45fa18d5f78ff3e0977435555f0\",\"content_sha256\":\"d3f83179dc2dd9b3f469f8064adfbe82071864cdcf69fb159181c267909dd710\",\"project_gid\":\"project-1\",\"section_gid\":\"section-backlog\",\"task_ref\":\"a\",\"version\":1}"},"memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"low-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#;
 
 fn computed_batch_hash(manifest: serde_json::Value) -> String {
     let program = r#"import json,runpy,sys
@@ -294,26 +310,20 @@ fn asana_adapter_discovers_exact_section_and_tag_matches() {
     assert_eq!(value["issues"][0]["state"], "Ready To Implement");
     assert_eq!(value["issues"][0]["labels"][0], "flashy-factory:ready");
     assert_eq!(value["issues"][0]["author"], "Maintainer");
-    assert!(
-        value["issues"][0]["revision"]
+    assert!(value["issues"][0]["revision"]
             .as_str()
             .unwrap()
-            .contains("section-1")
-    );
+        .contains("section-1"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("test-secret-token"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("test-secret-token"));
 
     let requests = server.join().unwrap();
-    assert!(
-        requests[0]
+    assert!(requests[0]
             .head
-            .starts_with("GET /projects/project-1/sections?")
-    );
-    assert!(
-        requests[1]
+        .starts_with("GET /projects/project-1/sections?"));
+    assert!(requests[1]
             .head
-            .starts_with("GET /sections/section-1/tasks?")
-    );
+        .starts_with("GET /sections/section-1/tasks?"));
     assert!(!requests[1].head.contains("project="));
     assert!(!requests[1].head.contains("section="));
     assert_eq!(
@@ -520,12 +530,10 @@ fn waiting_reconciliation_keeps_manual_and_unsafe_graphs_out_of_the_implementati
         assert!(output.status.success());
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["issues"].as_array().unwrap().len(), 1);
-        assert!(
-            value["issues"][0]["revision"]
+        assert!(value["issues"][0]["revision"]
                 .as_str()
                 .unwrap()
-                .contains(":unsafe:")
-        );
+            .contains(":unsafe:"));
         server.join().unwrap();
     }
 }
@@ -557,12 +565,10 @@ fn waiting_reconciliation_observes_cyclic_dependencies_as_a_decision_boundary() 
     let output = run_waiting_adapter(&api_base);
     assert!(output.status.success());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        value["issues"][0]["revision"]
+    assert!(value["issues"][0]["revision"]
             .as_str()
             .unwrap()
-            .contains(":unsafe:")
-    );
+        .contains(":unsafe:"));
     server.join().unwrap();
 }
 
@@ -692,16 +698,12 @@ fn terminal_pr_reconciliation_completes_merged_manual_and_routes_contradictory_t
         r#"{"status":"merged","released":[]}"#
     );
     let requests = server.join().unwrap();
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("POST /sections/done/addTask"))
-    );
-    assert!(
-        requests
+        .any(|request| request.head.starts_with("POST /sections/done/addTask")));
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("PUT /tasks/task-42"))
-    );
+        .any(|request| request.head.starts_with("PUT /tasks/task-42")));
 
     let (api_base, server) = serve(vec![Response {
         status: "200 OK",
@@ -747,11 +749,9 @@ fn terminal_pr_reconciliation_completes_merged_manual_and_routes_contradictory_t
         String::from_utf8_lossy(&unsafe_task.stderr)
     );
     let requests = server.join().unwrap();
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("POST /sections/decision/addTask"))
-    );
+        .any(|request| request.head.starts_with("POST /sections/decision/addTask")));
 }
 
 #[test]
@@ -826,21 +826,15 @@ fn merged_pr_completion_and_eligible_dependent_release_are_atomic_after_reads() 
         r#"{"status":"merged","released":["task-43"]}"#
     );
     let requests = server.join().unwrap();
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("POST /sections/done/addTask"))
-    );
-    assert!(
-        requests
+        .any(|request| request.head.starts_with("POST /sections/done/addTask")));
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("PUT /tasks/task-42"))
-    );
-    assert!(
-        requests
+        .any(|request| request.head.starts_with("PUT /tasks/task-42")));
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("POST /sections/ready/addTask"))
-    );
+        .any(|request| request.head.starts_with("POST /sections/ready/addTask")));
 }
 
 #[test]
@@ -899,11 +893,9 @@ fn unsafe_dependent_routes_to_decision_and_ineligible_work_is_untouched() {
         String::from_utf8_lossy(&output.stderr)
     );
     let requests = server.join().unwrap();
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .any(|request| request.head.starts_with("POST /sections/decision/addTask"))
-    );
+        .any(|request| request.head.starts_with("POST /sections/decision/addTask")));
 
     let (api_base, server) = serve(vec![Response {
         status: "200 OK",
@@ -954,11 +946,9 @@ fn dependency_read_failure_leaves_parent_and_dependents_unmodified() {
     );
     assert!(!output.status.success());
     let requests = server.join().unwrap();
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .all(|request| !request.head.starts_with("POST ") && !request.head.starts_with("PUT "))
-    );
+        .all(|request| !request.head.starts_with("POST ") && !request.head.starts_with("PUT ")));
 }
 
 #[test]
@@ -1144,11 +1134,9 @@ fn asana_client_supports_focused_agent_updates() {
         serde_json::from_str::<serde_json::Value>(&requests[3].body).unwrap(),
         serde_json::json!({"data":{"text":"PR is ready for review.\n"}})
     );
-    assert!(
-        requests[6]
+    assert!(requests[6]
             .head
-            .starts_with("POST /sections/section-review/addTask ")
-    );
+        .starts_with("POST /sections/section-review/addTask "));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&requests[6].body).unwrap(),
         serde_json::json!({"data":{"task":"task-42"}})
@@ -1184,19 +1172,15 @@ fn dependency_review_is_advisory_and_ranks_planned_work_with_rationale() {
     assert_eq!(review["candidates"].as_array().unwrap().len(), 1);
     assert_eq!(review["candidates"][0]["gid"], "task-schema");
     assert_eq!(review["candidates"][0]["confidence"], "high");
-    assert!(
-        review["candidates"][0]["rationale"]
+    assert!(review["candidates"][0]["rationale"]
             .as_str()
             .unwrap()
-            .contains("payment")
-    );
+        .contains("payment"));
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2);
-    assert!(
-        requests
+    assert!(requests
             .iter()
-            .all(|request| !request.head.starts_with("POST "))
-    );
+        .all(|request| !request.head.starts_with("POST ")));
 }
 
 #[test]
@@ -1282,20 +1266,16 @@ fn spec_approval_writes_only_confirmed_native_dependencies_before_routing() {
         .filter(|request| request.head.starts_with("POST "))
         .collect::<Vec<_>>();
     assert_eq!(mutations.len(), 2);
-    assert!(
-        mutations[0]
+    assert!(mutations[0]
             .head
-            .starts_with("POST /tasks/task-42/addDependencies ")
-    );
+        .starts_with("POST /tasks/task-42/addDependencies "));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&mutations[0].body).unwrap(),
         serde_json::json!({"data": {"dependencies": ["task-blocker"]}})
     );
-    assert!(
-        mutations[1]
+    assert!(mutations[1]
             .head
-            .starts_with("POST /sections/waiting/addTask ")
-    );
+        .starts_with("POST /sections/waiting/addTask "));
 }
 
 #[test]
@@ -1468,11 +1448,9 @@ fn asana_client_never_forwards_the_bearer_token_through_a_redirect() {
         String::from_utf8_lossy(&output.stderr)
     );
     let first_request = redirect_handle.join().unwrap();
-    assert!(
-        first_request
+    assert!(first_request
             .head
-            .contains("Authorization: Bearer test-secret-token")
-    );
+        .contains("Authorization: Bearer test-secret-token"));
     assert!(
         target_handle.join().unwrap().is_none(),
         "redirect target received the bearer token"
@@ -1550,7 +1528,7 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}]}}"#,
+            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#,
             headers: &[],
         },
         Response {
@@ -1570,7 +1548,7 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-b","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}]}}"#,
+            body: r#"{"data":{"gid":"task-b","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#,
             headers: &[],
         },
         Response {
@@ -1590,7 +1568,7 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-c","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}]}}"#,
+            body: r#"{"data":{"gid":"task-c","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#,
             headers: &[],
         },
     ]);
@@ -1599,7 +1577,11 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
         serde_json::json!({
             "delivery_policy": "autonomous_to_pr",
             "dependencies": "independent",
-            "tasks": [task("a", "Schema"), task("b", "API"), task("c", "Docs")]
+            "tasks": [
+                {"ref": "a", "name": "Schema", "custom_fields": {"priority-field": "high-option", "points-field": "three-option", "type-field": "enhancement-option"}},
+                {"ref": "b", "name": "API", "custom_fields": {"priority-field": "high-option", "points-field": "three-option", "type-field": "enhancement-option"}},
+                {"ref": "c", "name": "Docs", "custom_fields": {"priority-field": "high-option", "points-field": "three-option", "type-field": "enhancement-option"}}
+            ]
         }),
     );
     assert!(
@@ -1610,23 +1592,19 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["ok"], true);
     assert_eq!(report["created_tasks"].as_array().unwrap().len(), 3);
-    assert!(
-        report["components"]
+    assert!(report["components"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|component| component["status"] == "ready_for_spec")
-    );
+        .all(|component| component["status"] == "ready_for_spec"));
 
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 24);
     assert!(requests[0].head.starts_with("GET /tasks/witness-backlog?"));
     assert!(requests[1].head.starts_with("GET /tasks/witness-ready?"));
-    assert!(
-        !requests
+    assert!(!requests
             .iter()
-            .any(|request| request.head.starts_with("GET /projects/project-1/sections"))
-    );
+        .any(|request| request.head.starts_with("GET /projects/project-1/sections")));
     let creation_requests = requests
         .iter()
         .filter(|request| request.head.starts_with("POST /tasks "))
@@ -1636,6 +1614,18 @@ fn asana_batch_creates_and_authorizes_three_independent_tasks() {
         assert!(request.head.starts_with("POST /tasks "));
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["data"]["projects"][0], "project-1");
+        assert_eq!(
+            body["data"]["custom_fields"]["priority-field"],
+            "high-option"
+        );
+        assert_eq!(
+            body["data"]["custom_fields"]["points-field"],
+            "three-option"
+        );
+        assert_eq!(
+            body["data"]["custom_fields"]["type-field"],
+            "enhancement-option"
+        );
     }
     assert_eq!(
         requests
@@ -1704,7 +1694,7 @@ fn asana_batch_fails_closed_when_witness_configuration_is_missing_or_mismatched(
         }]);
         let (token_info_url, token_server) = serve(vec![Response {
             status: "200 OK",
-            body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":1217184666380172}"#,
+            body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":1217184666380172}"#,
             headers: &[],
         }]);
         let mut command = Command::new(client());
@@ -1727,11 +1717,9 @@ fn asana_batch_fails_closed_when_witness_configuration_is_missing_or_mismatched(
         assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
         if witness.is_some() {
             let requests = api_server.join().unwrap();
-            assert!(
-                !requests
+            assert!(!requests
                     .iter()
-                    .any(|request| request.head.starts_with("POST "))
-            );
+                .any(|request| request.head.starts_with("POST ")));
         }
         assert_eq!(token_server.join().unwrap().len(), 1);
     }
@@ -1785,11 +1773,9 @@ fn asana_batch_keeps_manual_tasks_in_backlog_with_the_manual_tag() {
     assert_eq!(report["components"][0]["status"], "manual_backlog");
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 8);
-    assert!(
-        requests[6]
+    assert!(requests[6]
             .head
-            .starts_with("POST /tasks/task-manual/addTag ")
-    );
+        .starts_with("POST /tasks/task-manual/addTag "));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&requests[6].body).unwrap(),
         serde_json::json!({"data":{"tag":"tag-manual"}})
@@ -1903,11 +1889,9 @@ fn asana_batch_writes_then_verifies_a_listed_chain() {
     assert_eq!(report["verified_edges"][0]["edge"], "api -> schema");
     assert_eq!(report["missing_edges"], serde_json::json!([]));
     let requests = server.join().unwrap();
-    assert!(
-        requests[9]
+    assert!(requests[9]
             .head
-            .starts_with("POST /tasks/task-api/addDependencies ")
-    );
+        .starts_with("POST /tasks/task-api/addDependencies "));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&requests[9].body).unwrap(),
         serde_json::json!({"data":{"dependencies":["task-schema"]}})
@@ -2004,11 +1988,9 @@ fn asana_batch_partial_creation_leaves_every_created_task_in_backlog() {
         report["components"][0]["status"],
         "manual_backlog_partial_create"
     );
-    assert!(
-        requests[13]
+    assert!(requests[13]
             .head
-            .starts_with("POST /tasks/task-api/addTag ")
-    );
+        .starts_with("POST /tasks/task-api/addTag "));
     assert!(requests[5].head.starts_with("POST /tasks "));
     let created_anchor: serde_json::Value = serde_json::from_str(&requests[5].body).unwrap();
     assert_eq!(
@@ -2145,16 +2127,12 @@ fn asana_batch_partial_edge_failure_authorizes_only_unaffected_components() {
     assert_eq!(report["components"][1]["status"], "ready_for_spec");
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 26);
-    assert!(
-        requests[23]
+    assert!(requests[23]
             .head
-            .starts_with("POST /tasks/task-docs/addTag ")
-    );
-    assert!(
-        requests[24]
+        .starts_with("POST /tasks/task-docs/addTag "));
+    assert!(requests[24]
             .head
-            .starts_with("POST /sections/section-ready/addTask ")
-    );
+        .starts_with("POST /sections/section-ready/addTask "));
     assert_eq!(
         requests
             .iter()
@@ -2250,16 +2228,118 @@ fn asana_batch_rolls_a_failed_authorization_back_to_backlog() {
     );
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 13);
-    assert!(
-        requests[9]
+    assert!(requests[9]
+        .head
+        .starts_with("POST /sections/section-backlog/addTask "));
+    assert!(requests[10]
             .head
-            .starts_with("POST /sections/section-backlog/addTask ")
+        .starts_with("POST /tasks/task-a/removeTag "));
+}
+
+#[test]
+fn asana_batch_custom_field_mismatch_remains_unsafe_after_safeguard() {
+    let ready = r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"low-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#;
+    let backlog = r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-backlog"}}],"tags":[{"gid":"tag-manual"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"low-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#;
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-backlog","name":"Backlog"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-ready","name":"Ready For Spec"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"tag-auto","name":"factory:auto-to-pr"},{"gid":"tag-manual","name":"factory:manual"}],"next_page":null}"#,
+            headers: &[],
+        },
+        missing_external_task(),
+        Response {
+            status: "201 Created",
+            body: r#"{"data":{"gid":"task-a"}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: ready,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":{}}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: backlog,
+            headers: &[],
+        },
+    ]);
+    let output = run_batch(
+        &api_base,
+        serde_json::json!({
+            "delivery_policy": "autonomous_to_pr",
+            "dependencies": "independent",
+            "tasks": [task_with_fields("a", "A")]
+        }),
+    );
+    assert!(!output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report["created_tasks"][0]["custom_fields"]["priority-field"],
+        "high-option"
+    );
+    assert_eq!(
+        report["components"][0]["status"],
+        "authorization_state_unsafe"
+    );
+    assert_eq!(
+        report["components"][0]["unsafe_task_gids"],
+        serde_json::json!(["task-a"])
     );
     assert!(
-        requests[10]
-            .head
-            .starts_with("POST /tasks/task-a/removeTag ")
+        report["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| {
+                failure["operation"] == "verify_authorization:a"
+                    && failure["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("custom fields match: False")
+            }),
+        "{report}"
     );
+    assert_eq!(server.join().unwrap().len(), 14);
 }
 
 #[test]
@@ -2345,16 +2425,14 @@ fn asana_batch_detects_dual_tags_and_verifies_the_safe_downgrade() {
         report["components"][0]["unsafe_task_gids"],
         serde_json::json!([])
     );
-    assert!(
-        report["failures"]
+    assert!(report["failures"]
             .as_array()
             .unwrap()
             .iter()
             .any(|failure| {
                 failure["operation"] == "verify_authorization:a"
                     && failure["error"].as_str().unwrap().contains("tag-manual")
-            })
-    );
+        }));
     assert_eq!(server.join().unwrap().len(), 14);
 }
 
@@ -2521,7 +2599,7 @@ fn asana_batch_recovers_an_accepted_create_after_the_connection_drops() {
         },
         Response {
             status: "200 OK",
-            body: EXTERNAL_TASK_A_BACKLOG,
+            body: EXTERNAL_TASK_A_FIELDS_BACKLOG,
             headers: &[],
         },
         Response {
@@ -2541,7 +2619,7 @@ fn asana_batch_recovers_an_accepted_create_after_the_connection_drops() {
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}]}}"#,
+            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#,
             headers: &[],
         },
     ]);
@@ -2550,7 +2628,7 @@ fn asana_batch_recovers_an_accepted_create_after_the_connection_drops() {
         serde_json::json!({
             "delivery_policy": "autonomous_to_pr",
             "dependencies": "independent",
-            "tasks": [task("a", "A")]
+            "tasks": [task_with_fields("a", "A")]
         }),
     );
     assert!(
@@ -2599,7 +2677,7 @@ fn asana_batch_reentry_reuses_exact_identity_and_rejects_task_or_content_changes
         },
         Response {
             status: "200 OK",
-            body: EXTERNAL_TASK_A_READY,
+            body: EXTERNAL_TASK_A_FIELDS_READY,
             headers: &[],
         },
         Response {
@@ -2619,7 +2697,7 @@ fn asana_batch_reentry_reuses_exact_identity_and_rejects_task_or_content_changes
         },
         Response {
             status: "200 OK",
-            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}]}}"#,
+            body: r#"{"data":{"gid":"task-a","memberships":[{"project":{"gid":"project-1"},"section":{"gid":"section-ready"}}],"tags":[{"gid":"tag-auto"}],"custom_fields":[{"gid":"priority-field","enum_value":{"gid":"high-option"}},{"gid":"points-field","enum_value":{"gid":"three-option"}},{"gid":"type-field","enum_value":{"gid":"enhancement-option"}}]}}"#,
             headers: &[],
         },
     ]);
@@ -2628,18 +2706,16 @@ fn asana_batch_reentry_reuses_exact_identity_and_rejects_task_or_content_changes
         serde_json::json!({
             "delivery_policy": "autonomous_to_pr",
             "dependencies": "independent",
-            "tasks": [task("a", "A")]
+            "tasks": [task_with_fields("a", "A")]
         }),
     );
     assert!(output.status.success());
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["created_tasks"][0]["source"], "reused");
     let requests = server.join().unwrap();
-    assert!(
-        !requests
+    assert!(!requests
             .iter()
-            .any(|request| request.head.starts_with("POST /tasks "))
-    );
+        .any(|request| request.head.starts_with("POST /tasks ")));
 
     for (existing, tasks) in [
         (
@@ -2683,14 +2759,53 @@ fn asana_batch_reentry_reuses_exact_identity_and_rejects_task_or_content_changes
         );
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("mismatched content"));
-        assert!(
-            !server
+        assert!(!server
                 .join()
                 .unwrap()
                 .iter()
-                .any(|request| request.head.starts_with("POST /tasks "))
-        );
+            .any(|request| request.head.starts_with("POST /tasks ")));
     }
+}
+
+#[test]
+fn asana_batch_reentry_rejects_custom_field_mismatch_before_create() {
+    let (api_base, server) = serve(vec![
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-backlog","name":"Backlog"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"section-ready","name":"Ready For Spec"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: r#"{"data":[{"gid":"tag-auto","name":"factory:auto-to-pr"},{"gid":"tag-manual","name":"factory:manual"}],"next_page":null}"#,
+            headers: &[],
+        },
+        Response {
+            status: "200 OK",
+            body: EXTERNAL_TASK_A_FIELDS_WRONG,
+            headers: &[],
+        },
+    ]);
+    let output = run_batch(
+        &api_base,
+        serde_json::json!({
+            "delivery_policy": "autonomous_to_pr",
+            "dependencies": "independent",
+            "tasks": [task_with_fields("a", "A")]
+        }),
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("mismatched custom fields"));
+    assert!(!server
+        .join()
+        .unwrap()
+        .iter()
+        .any(|request| request.head.starts_with("POST /tasks ")));
 }
 
 #[test]
@@ -2783,13 +2898,11 @@ fn asana_batch_reentry_rejects_changed_policy_graph_or_disjoint_task_set() {
     );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("mismatched content"));
-    assert!(
-        !server
+    assert!(!server
             .join()
             .unwrap()
             .iter()
-            .any(|request| request.head.starts_with("POST /tasks "))
-    );
+        .any(|request| request.head.starts_with("POST /tasks ")));
 
     let (api_base, server) = serve(vec![
         Response {
@@ -2823,13 +2936,11 @@ fn asana_batch_reentry_rejects_changed_policy_graph_or_disjoint_task_set() {
     );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("mismatched content"));
-    assert!(
-        !server
+    assert!(!server
             .join()
             .unwrap()
             .iter()
-            .any(|request| request.head.starts_with("POST /tasks "))
-    );
+        .any(|request| request.head.starts_with("POST /tasks ")));
 
     let (api_base, server) = serve(vec![
         Response {
@@ -2864,16 +2975,12 @@ fn asana_batch_reentry_rejects_changed_policy_graph_or_disjoint_task_set() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("mismatched content"));
     let requests = server.join().unwrap();
-    assert!(
-        requests[3]
+    assert!(requests[3]
             .head
-            .starts_with("GET /tasks/external:flashy-factory%3Atest-batch%3Abatch?")
-    );
-    assert!(
-        !requests
+        .starts_with("GET /tasks/external:flashy-factory%3Atest-batch%3Abatch?"));
+    assert!(!requests
             .iter()
-            .any(|request| request.head.starts_with("POST /tasks "))
-    );
+        .any(|request| request.head.starts_with("POST /tasks ")));
 }
 
 #[test]
@@ -2915,11 +3022,9 @@ fn asana_batch_rejects_mismatched_or_cross_project_external_identities_before_cr
         );
         assert!(!output.status.success());
         let requests = server.join().unwrap();
-        assert!(
-            !requests
+        assert!(!requests
                 .iter()
-                .any(|request| request.head.starts_with("POST /tasks "))
-        );
+            .any(|request| request.head.starts_with("POST /tasks ")));
     }
 }
 
@@ -2940,10 +3045,8 @@ fn asana_batch_requires_the_configured_oauth_app_and_scopes() {
     wrong_mode.env("ASANA_ACCESS_TOKEN", "test-secret-token");
     let output = wrong_mode.output().unwrap();
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("batch-create requires ASANA_AUTH_MODE=oauth")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("batch-create requires ASANA_AUTH_MODE=oauth"));
 
     for (token_info, expected) in [
         (
@@ -2951,15 +3054,15 @@ fn asana_batch_requires_the_configured_oauth_app_and_scopes() {
             "missing scopes",
         ),
         (
-            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read","client_id":"other-client"}"#,
+            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"other-client"}"#,
             "does not belong",
         ),
         (
-            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"oauth-client"}"#,
+            r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read users:read","client_id":"oauth-client"}"#,
             "disallowed scopes",
         ),
         (
-            r#"{"active":true,"token_type":"bearer","expires_in":299,"scope":"tasks:read tasks:write projects:read tags:read","client_id":"oauth-client"}"#,
+            r#"{"active":true,"token_type":"bearer","expires_in":299,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"oauth-client"}"#,
             "at least five minutes",
         ),
     ] {
@@ -3008,7 +3111,7 @@ fn asana_batch_rejects_disallowed_scopes_before_contacting_the_asana_api() {
     let api_base = format!("http://{}/api/1.0", api_listener.local_addr().unwrap());
     let (token_info_url, token_server) = serve(vec![Response {
         status: "200 OK",
-        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read","client_id":"oauth-client"}"#,
+        body: r#"{"active":true,"token_type":"bearer","expires_in":3600,"scope":"tasks:read tasks:write projects:read tags:read custom_fields:read users:read","client_id":"oauth-client"}"#,
         headers: &[],
     }]);
     let mut command = Command::new(client());
@@ -3079,16 +3182,21 @@ fn asana_batch_rejects_invalid_graphs_and_batch_size_before_mutation() {
 }
 
 #[test]
-fn asana_batch_rejects_custom_fields_without_requesting_a_broader_scope() {
+fn asana_batch_rejects_malformed_custom_fields_before_mutation() {
+    for (custom_fields, expected) in [
+        (serde_json::json!({}), "must be a non-empty object"),
+        (serde_json::json!({"field-1": 42}), "enum option GID"),
+    ] {
     let output = run_invalid_batch(serde_json::json!({
         "delivery_policy": "backlog_only",
         "dependencies": "independent",
         "tasks": [{
             "ref": "a",
             "name": "A",
-            "custom_fields": {"field-1": "option-1"}
+                "custom_fields": custom_fields
         }]
     }));
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("custom_fields:read"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
+    }
 }

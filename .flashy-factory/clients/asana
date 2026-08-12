@@ -36,6 +36,7 @@ AUTHORIZATION_TAGS = {
     "autonomous_to_pr": "factory:auto-to-pr",
 }
 REQUIRED_BATCH_OAUTH_SCOPES = {
+    "custom_fields:read",
     "projects:read",
     "tags:read",
     "tasks:read",
@@ -74,8 +75,8 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def require_gid(name: str, value: str | None) -> str:
-    if not value or not GID_PATTERN.fullmatch(value):
+def require_gid(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not GID_PATTERN.fullmatch(value):
         raise ClientError(f"{name} must be a valid Asana GID")
     return value
 
@@ -811,6 +812,7 @@ def task_in_project(
     include_context: bool = False,
     include_dependencies: bool = False,
     include_authorization: bool = False,
+    include_custom_fields: bool = False,
 ) -> dict[str, Any]:
     fields = "gid,name,memberships.project.gid,memberships.project.name"
     if include_context:
@@ -824,6 +826,8 @@ def task_in_project(
         fields = f"{fields},dependencies.gid"
     if include_authorization:
         fields = f"{fields},tags.gid,memberships.section.gid"
+    if include_custom_fields:
+        fields = f"{fields},custom_fields.gid,custom_fields.enum_value.gid"
     payload = client.request(
         "GET",
         f"/tasks/{encoded_gid(gid)}",
@@ -934,10 +938,17 @@ def parse_batch_manifest(
             task["notes"] = notes
         custom_fields = raw_task.get("custom_fields")
         if custom_fields is not None:
-            raise ClientError(
-                f"{field}.custom_fields is unavailable to narrow-scope batch-create; "
-                "it would require custom_fields:read"
-            )
+            if not isinstance(custom_fields, dict) or not custom_fields:
+                raise ClientError(f"{field}.custom_fields must be a non-empty object")
+            if len(custom_fields) > 20:
+                raise ClientError(f"{field}.custom_fields may contain at most 20 values")
+            task["custom_fields"] = {
+                require_gid(f"{field}.custom_fields field GID", field_gid): require_gid(
+                    f"{field}.custom_fields[{field_gid!r}] enum option GID",
+                    option_gid,
+                )
+                for field_gid, option_gid in custom_fields.items()
+            }
         tasks.append(task)
 
     dependencies = manifest.get("dependencies")
@@ -1149,7 +1160,8 @@ def get_external_task(
             query={
                 "opt_fields": (
                     "gid,name,notes,completed,external.gid,external.data,"
-                    "memberships.project.gid,memberships.section.gid"
+                    "memberships.project.gid,memberships.section.gid,"
+                    "custom_fields.gid,custom_fields.enum_value.gid"
                 )
             },
         )
@@ -1213,6 +1225,10 @@ def verify_external_task(
         raise ClientError(
             f"external creation identity {external_gid!r} has mismatched live content"
         )
+    if not custom_fields_match(task, expected_task.get("custom_fields", {})):
+        raise ClientError(
+            f"external creation identity {external_gid!r} has mismatched custom fields"
+        )
     memberships = (
         task.get("memberships") if isinstance(task.get("memberships"), list) else []
     )
@@ -1244,6 +1260,30 @@ def verify_external_task(
     return gid
 
 
+def live_custom_field_values(task: dict[str, Any]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    custom_fields = (
+        task.get("custom_fields")
+        if isinstance(task.get("custom_fields"), list)
+        else []
+    )
+    for custom_field in custom_fields:
+        if not isinstance(custom_field, dict):
+            continue
+        field_gid = custom_field.get("gid")
+        enum_value = custom_field.get("enum_value")
+        if isinstance(field_gid, str) and isinstance(enum_value, dict):
+            option_gid = enum_value.get("gid")
+            if isinstance(option_gid, str):
+                values[field_gid] = option_gid
+    return values
+
+
+def custom_fields_match(task: dict[str, Any], expected: dict[str, str]) -> bool:
+    live = live_custom_field_values(task)
+    return all(live.get(field_gid) == option_gid for field_gid, option_gid in expected.items())
+
+
 def mutate_tag(
     client: AsanaClient, task_gid: str, tag_gid: str, operation: str
 ) -> None:
@@ -1270,6 +1310,7 @@ def verify_component_authorization(
     expected_section_gid: str,
     expected_tag_gid: str,
     authorization_tag_gids: set[str],
+    expected_tasks: dict[str, dict[str, Any]],
 ) -> tuple[list[str], list[dict[str, str]]]:
     unsafe_gids: list[str] = []
     failures: list[dict[str, str]] = []
@@ -1281,6 +1322,9 @@ def verify_component_authorization(
                 gid,
                 project_gid,
                 include_authorization=True,
+                include_custom_fields=bool(
+                    expected_tasks[reference].get("custom_fields")
+                ),
             )
             tags = task.get("tags") if isinstance(task.get("tags"), list) else []
             present_authorization_tags = {
@@ -1302,9 +1346,14 @@ def verify_component_authorization(
                 and isinstance(membership.get("section"), dict)
                 and membership["section"].get("gid") is not None
             }
-            if present_authorization_tags != {expected_tag_gid} or project_sections != {
-                expected_section_gid
-            }:
+            custom_fields_verified = custom_fields_match(
+                task, expected_tasks[reference].get("custom_fields", {})
+            )
+            if (
+                present_authorization_tags != {expected_tag_gid}
+                or project_sections != {expected_section_gid}
+                or not custom_fields_verified
+            ):
                 unsafe_gids.append(gid)
                 failures.append(
                     {
@@ -1313,7 +1362,8 @@ def verify_component_authorization(
                             "expected exactly one selected authorization tag and "
                             f"section {expected_section_gid}; found tags "
                             f"{sorted(present_authorization_tags)} and sections "
-                            f"{sorted(project_sections)}"
+                            f"{sorted(project_sections)}; custom fields match: "
+                            f"{custom_fields_verified}"
                         ),
                     }
                 )
@@ -1335,6 +1385,7 @@ def safeguard_component(
     project_gid: str,
     authorization_tags: dict[str, str],
     backlog_gid: str,
+    expected_tasks: dict[str, dict[str, Any]],
 ) -> tuple[list[str], list[dict[str, str]]]:
     failures: list[dict[str, str]] = []
     manual_tag_gid = authorization_tags[AUTHORIZATION_TAGS["backlog_only"]]
@@ -1363,6 +1414,7 @@ def safeguard_component(
         backlog_gid,
         manual_tag_gid,
         set(authorization_tags.values()),
+        expected_tasks,
     )
     failures.extend(verification_failures)
     return unsafe_gids, failures
@@ -1377,6 +1429,7 @@ def activate_component(
     authorization_tags: dict[str, str],
     backlog_gid: str,
     ready_for_spec_gid: str | None,
+    expected_tasks: dict[str, dict[str, Any]],
 ) -> tuple[bool, list[str], list[dict[str, str]]]:
     failures: list[dict[str, str]] = []
     selected_tag_gid = authorization_tags[AUTHORIZATION_TAGS[delivery_policy]]
@@ -1409,6 +1462,7 @@ def activate_component(
             expected_section_gid,
             selected_tag_gid,
             set(authorization_tags.values()),
+            expected_tasks,
         )
         failures.extend(verification_failures)
         if not unsafe_gids:
@@ -1425,6 +1479,7 @@ def activate_component(
         project_gid,
         authorization_tags,
         backlog_gid,
+        expected_tasks,
     )
     failures.extend(safeguard_failures)
     return False, unsafe_gids, failures
@@ -1459,6 +1514,7 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
             label=READY_FOR_SPEC_SECTION,
         )
     authorization_tags = resolve_authorization_tags(client, workspace_gid)
+    expected_tasks = {task["ref"]: task for task in tasks}
 
     batch_creation_id = manifest["batch_creation_id"]
     batch_definition_sha256 = batch_definition_hash(delivery_policy, tasks, edges)
@@ -1507,6 +1563,8 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
         }
         if "notes" in task:
             data["notes"] = task["notes"]
+        if "custom_fields" in task:
+            data["custom_fields"] = task["custom_fields"]
         try:
             payload = client.request("POST", "/tasks", data=data)
             created_task = payload.get("data")
@@ -1572,6 +1630,7 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
             "ref": task["ref"],
             "gid": gids[task["ref"]],
             "source": sources[task["ref"]],
+            "custom_fields": task.get("custom_fields", {}),
         }
         for task in tasks
         if task["ref"] in gids
@@ -1610,6 +1669,7 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
                 project_gid,
                 authorization_tags,
                 backlog_gid,
+                expected_tasks,
             )
             report["failures"].extend(safeguard_failures)
             report["components"].append(
@@ -1707,6 +1767,7 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
                 project_gid,
                 authorization_tags,
                 backlog_gid,
+                expected_tasks,
             )
             report["failures"].extend(safeguard_failures)
             component_report["unsafe_task_gids"] = unsafe_gids
@@ -1725,6 +1786,7 @@ def create_batch(client: AsanaClient, args: argparse.Namespace) -> dict[str, Any
                 authorization_tags,
                 backlog_gid,
                 ready_for_spec_gid,
+                expected_tasks,
             )
             report["failures"].extend(failures)
             component_report["unsafe_task_gids"] = unsafe_gids
